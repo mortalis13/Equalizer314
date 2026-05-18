@@ -1,5 +1,5 @@
-<!-- Filled volume / speaker glyph used as the "Bound" (broadcast)
-     source badge in the Now playing list. -->
+<!-- Frame 2 of the "now playing" speaker pulse: cone + inner + outer
+     sound waves (peak frame). Used by anim_speaker_pulse.xml. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"

@@ -41,6 +41,11 @@ class EqService : Service() {
          *  [SessionEffectManager.observeDetectedPlayback]. */
         const val ACTION_PLAYBACK_DETECTED = "com.bearinmind.equalizer314.PLAYBACK_DETECTED"
         const val EXTRA_DETECTED_BUNDLE = "detected_bundle"
+        /** Reserved key inside [EXTRA_DETECTED_BUNDLE]. Value is a
+         *  String[] of packages currently in `PlaybackState.STATE_PLAYING`.
+         *  Reserved-name prefix ('_') avoids any collision with real
+         *  Android package names. */
+        const val EXTRA_PLAYING_PACKAGES_KEY = "_playing_packages_"
         /** Fired by [PlaybackListenerService.onListenerDisconnected] when
          *  the user revokes Notification access (or the system unbinds
          *  the listener for any other reason). The service tells the
@@ -175,17 +180,19 @@ class EqService : Service() {
             ACTION_PLAYBACK_DETECTED -> {
                 startForeground(NOTIFICATION_ID, buildNotification())
                 val bundle = intent.getBundleExtra(EXTRA_DETECTED_BUNDLE)
-                val detected: Map<String, Set<Int>> = if (bundle == null) {
-                    emptyMap()
-                } else {
-                    val out = mutableMapOf<String, Set<Int>>()
+                val detected = mutableMapOf<String, Set<Int>>()
+                var playingNow: Set<String> = emptySet()
+                if (bundle != null) {
                     for (key in bundle.keySet()) {
+                        if (key == EXTRA_PLAYING_PACKAGES_KEY) {
+                            playingNow = bundle.getStringArray(key)?.toSet().orEmpty()
+                            continue
+                        }
                         val ints = bundle.getIntArray(key) ?: continue
-                        out[key] = ints.toSet()
+                        detected[key] = ints.toSet()
                     }
-                    out
                 }
-                sessionEffects?.observeDetectedPlayback(detected)
+                sessionEffects?.observeDetectedPlayback(detected, playingNow)
                 return START_STICKY
             }
             ACTION_APPLY_ROUTING_MODE -> {

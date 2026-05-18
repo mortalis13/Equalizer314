@@ -30,8 +30,8 @@ import com.bearinmind.equalizer314.audio.SessionEffectManager
 import com.bearinmind.equalizer314.state.EqPreferencesManager
 import com.bearinmind.equalizer314.ui.PresetDropdownAdapter
 import androidx.lifecycle.lifecycleScope
-import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.color.MaterialColors
@@ -64,15 +64,15 @@ class ChannelInputActivity : AppCompatActivity() {
     private lateinit var currentSessionEmpty: TextView
     private lateinit var sessionsAdapter: ActiveSessionsAdapter
 
-    // Persistent "Session detection" toggle card. Always visible — the
-    // button label, body, and title change to reflect whether the user
-    // currently has Notification access granted. Tapping the button
-    // always opens system Settings (the only place Android lets the
-    // user flip the listener bind).
+    // Persistent "Session detection" toggle card. Always visible —
+    // the switch reflects the current system Notification access
+    // state, and tapping it routes the user to system Settings (the
+    // only place Android lets a third-party app flip the listener
+    // bind). The body text below the title varies with the state.
     private lateinit var enableDetectionCard: MaterialCardView
     private lateinit var enableDetectionTitle: TextView
     private lateinit var enableDetectionBody: TextView
-    private lateinit var enableDetectionButton: MaterialButton
+    private lateinit var enableDetectionSwitch: MaterialSwitch
 
     // Bound EqService so we can read the live set of attached sessions
     // (SessionEffectManager.getActiveSessions). Null when the service
@@ -151,18 +151,25 @@ class ChannelInputActivity : AppCompatActivity() {
         enableDetectionCard = findViewById(R.id.enableDetectionCard)
         enableDetectionTitle = findViewById(R.id.enableDetectionTitle)
         enableDetectionBody = findViewById(R.id.enableDetectionBody)
-        enableDetectionButton = findViewById(R.id.enableDetectionButton)
-        enableDetectionButton.setOnClickListener {
-            // Both ON and OFF states route to the same system Settings
-            // screen — Android doesn't allow third-party apps to flip
-            // BIND_NOTIFICATION_LISTENER_SERVICE directly. The user
-            // toggles it there; we re-sync the UI on the next onResume.
+        enableDetectionSwitch = findViewById(R.id.enableDetectionSwitch)
+        // OnClickListener (not OnCheckedChange) so programmatic isChecked
+        // updates don't recurse. The user tap will flip the switch
+        // visually for an instant; we snap it back to the real NLS
+        // state, then route to system Settings — the only place Android
+        // lets us flip BIND_NOTIFICATION_LISTENER_SERVICE. On return,
+        // onResume re-syncs from the system.
+        enableDetectionSwitch.setOnClickListener {
+            enableDetectionSwitch.isChecked = isNotificationListenerGranted()
             try {
                 startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
             } catch (_: Throwable) {
                 Toast.makeText(this, "Could not open Notification access settings", Toast.LENGTH_SHORT).show()
             }
         }
+        // Tapping the card body (anywhere outside the switch) also goes
+        // to Settings — feels right because the entire card is the
+        // affordance.
+        enableDetectionCard.setOnClickListener { enableDetectionSwitch.performClick() }
 
         setupRoutingModeChips()
         loadApps()
@@ -195,26 +202,25 @@ class ChannelInputActivity : AppCompatActivity() {
         refreshDetectionCtaVisibility()
     }
 
-    /** The card stays visible in both states so the user can turn
-     *  detection on AND off. The button label / body copy varies based
-     *  on whether [NotificationManagerCompat.getEnabledListenerPackages]
-     *  currently includes us. Both states open the system Settings
-     *  screen — Android doesn't let third-party apps flip the listener
-     *  bind directly. */
-    private fun refreshDetectionCtaVisibility() {
-        val granted = NotificationManagerCompat
+    private fun isNotificationListenerGranted(): Boolean =
+        NotificationManagerCompat
             .getEnabledListenerPackages(this)
             .contains(packageName)
+
+    /** Card stays visible in both states. Title and body are fixed;
+     *  only the switch reflects the current system Notification access
+     *  state. */
+    private fun refreshDetectionCtaVisibility() {
+        val granted = isNotificationListenerGranted()
         enableDetectionCard.visibility = View.VISIBLE
-        if (granted) {
-            enableDetectionTitle.text = "Session detection is on"
-            enableDetectionBody.text = "Apps currently playing audio appear under \"Now playing.\" Tap below to manage Notification access in system Settings."
-            enableDetectionButton.text = "Manage in Settings"
-        } else {
-            enableDetectionTitle.text = "Session detection is off"
-            enableDetectionBody.text = "To list YouTube, Netflix, Chrome, games etc., grant Notification access. We never read your notifications — this is the only Android API that exposes active media sessions to apps."
-            enableDetectionButton.text = "Enable detection"
-        }
+        enableDetectionSwitch.isChecked = granted
+        // "Dump services" = the reflected
+        // ServiceManager.getService("audio").dumpAsync path that
+        // recovers session IDs from audioserver. (When the OEM denies
+        // the dump call, MediaSessionManager is the public-API
+        // fallback — same user-facing wording covers both since the
+        // user-visible result is the same: "lists apps playing audio".)
+        enableDetectionBody.text = "Lists apps playing audio using dumpsys"
     }
 
     override fun onStop() {
@@ -242,7 +248,7 @@ class ChannelInputActivity : AppCompatActivity() {
                     val info = pm.getApplicationInfo(s.packageName, 0)
                     pm.getApplicationIcon(info) to pm.getApplicationLabel(info).toString()
                 }.getOrElse { null to s.packageName }
-                SessionRow(s.sessionId, s.packageName, label, icon, s.presetName, s.source)
+                SessionRow(s.sessionId, s.packageName, label, icon, s.presetName, s.source, s.isPlaying)
             }.sortedBy { it.label.lowercase() }
             sessionsAdapter.setItems(rows)
         }
@@ -378,6 +384,7 @@ class ChannelInputActivity : AppCompatActivity() {
         val icon: Drawable?,
         val presetName: String?,
         val source: SessionEffectManager.AttachSource,
+        val isPlaying: Boolean,
     )
 
     private inner class ActiveSessionsAdapter : RecyclerView.Adapter<ActiveSessionsAdapter.VH>() {
@@ -393,7 +400,7 @@ class ChannelInputActivity : AppCompatActivity() {
             val icon: ImageView = view.findViewById(R.id.sessionRowIcon)
             val name: TextView = view.findViewById(R.id.sessionRowName)
             val meta: TextView = view.findViewById(R.id.sessionRowMeta)
-            val sourceBadge: ImageView = view.findViewById(R.id.sessionRowSourceBadge)
+            val pulse: ImageView = view.findViewById(R.id.sessionRowPulse)
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -430,12 +437,20 @@ class ChannelInputActivity : AppCompatActivity() {
             } else {
                 "${r.packageName} • $sourceTag • $preset"
             }
-            holder.sourceBadge.setImageResource(
-                when (r.source) {
-                    SessionEffectManager.AttachSource.BROADCAST -> R.drawable.ic_volume_filled
-                    SessionEffectManager.AttachSource.DETECTED -> R.drawable.ic_volume_outline
+            // Speaker pulse only animates when the package's
+            // MediaController reports STATE_PLAYING. When paused /
+            // silent we stop the animation and pin it to frame 0
+            // (cone only, no waves) so the row reads as "present but
+            // not making sound right now."
+            val pulse = holder.pulse.drawable as? android.graphics.drawable.AnimationDrawable
+            if (pulse != null) {
+                if (r.isPlaying) {
+                    if (!pulse.isRunning) pulse.start()
+                } else {
+                    pulse.stop()
+                    pulse.selectDrawable(0)
                 }
-            )
+            }
         }
     }
 

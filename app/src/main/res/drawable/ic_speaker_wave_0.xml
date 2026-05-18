@@ -1,0 +1,12 @@
+<!-- Frame 0 of the "now playing" speaker pulse animation: just the
+     speaker cone, no sound waves. Used by anim_speaker_pulse.xml. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorPrimary">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M3,10v4h4l5,5V5L7,10H3z" />
+</vector>

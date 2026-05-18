@@ -35,12 +35,20 @@ class SessionEffectManager(private val context: Context) {
     enum class AttachSource { BROADCAST, DETECTED }
 
     /** Snapshot of a currently-known session. Shown live in
-     *  ChannelInputActivity's "Now playing" panel. */
+     *  ChannelInputActivity's "Now playing" panel.
+     *
+     *  [isPlaying] reflects whether the package's [MediaController]
+     *  reports `PlaybackState.STATE_PLAYING` right now. A row can be
+     *  "known" (in [sessionInfo]) but not currently playing — e.g.
+     *  Spotify broadcast OPEN, you hit pause; the session stays
+     *  alive but isPlaying flips false. The UI uses this to start /
+     *  stop the speaker-pulse animation per row. */
     data class ActiveSession(
         val sessionId: Int,
         val packageName: String,
         val presetName: String?,
         val source: AttachSource,
+        val isPlaying: Boolean = false,
     )
 
     private val sessions = mutableMapOf<Int, DynamicsProcessing>()
@@ -50,6 +58,11 @@ class SessionEffectManager(private val context: Context) {
      *  path. Used to compute the next [observeDetectedPlayback] diff so
      *  we only attach/detach for actual transitions, not on every poll. */
     private val detectedKeys = mutableSetOf<Pair<String, Int>>()
+    /** Snapshot of packages currently in `PlaybackState.STATE_PLAYING`.
+     *  Pushed in via [observeDetectedPlayback]; consulted whenever we
+     *  build a new [ActiveSession] so the UI's animated speaker pulse
+     *  reflects real-time playback state. */
+    private var playingPackages: Set<String> = emptySet()
     private val eqPrefs = EqPreferencesManager(context)
 
     @Synchronized
@@ -99,7 +112,10 @@ class SessionEffectManager(private val context: Context) {
 
         // Update / insert sessionInfo BEFORE any routing-mode gate so the
         // "Now playing" UI shows the session even in System-wide mode.
-        sessionInfo[sessionId] = ActiveSession(sessionId, packageName, binding?.presetName, source)
+        sessionInfo[sessionId] = ActiveSession(
+            sessionId, packageName, binding?.presetName, source,
+            isPlaying = playingPackages.contains(packageName),
+        )
         notifySessionsChanged()
 
         // Routing mode gate. Tracking is mode-independent (above); DP /
@@ -159,10 +175,21 @@ class SessionEffectManager(private val context: Context) {
      *  - Pairs in [detected] but not in [detectedKeys] → `attach(.., DETECTED)`.
      *  - Pairs in [detectedKeys] but not in [detected] → `detach(..)`
      *    **only if** the entry's current source is DETECTED. BROADCAST
-     *    entries manage their own teardown via CLOSE_AUDIO_EFFECT_CONTROL_SESSION. */
+     *    entries manage their own teardown via CLOSE_AUDIO_EFFECT_CONTROL_SESSION.
+     *
+     *  [playingNow] is the set of packages currently in
+     *  `PlaybackState.STATE_PLAYING`. Every tracked entry's `isPlaying`
+     *  flag is reconciled against this set — used by the row's animated
+     *  speaker pulse to differentiate "outputting right now" from
+     *  "session is known but paused / silent." */
     @Synchronized
-    fun observeDetectedPlayback(detected: Map<String, Set<Int>>) {
+    fun observeDetectedPlayback(
+        detected: Map<String, Set<Int>>,
+        playingNow: Set<String> = emptySet(),
+    ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+
+        playingPackages = playingNow
 
         val newPairs = mutableSetOf<Pair<String, Int>>()
         for ((pkg, sids) in detected) for (sid in sids) newPairs.add(pkg to sid)
@@ -184,6 +211,20 @@ class SessionEffectManager(private val context: Context) {
 
         detectedKeys.clear()
         detectedKeys.addAll(newPairs)
+
+        // Reconcile isPlaying for every tracked row (including BROADCAST
+        // entries — Spotify pausing is the same signal regardless of
+        // how we learned about it). Emit notifySessionsChanged once if
+        // any entry's isPlaying changed.
+        var changed = false
+        for ((sid, info) in sessionInfo.toMap()) {
+            val nowPlaying = playingPackages.contains(info.packageName)
+            if (info.isPlaying != nowPlaying) {
+                sessionInfo[sid] = info.copy(isPlaying = nowPlaying)
+                changed = true
+            }
+        }
+        if (changed) notifySessionsChanged()
     }
 
     /** Re-evaluates DP / reverb attachment for every tracked session in

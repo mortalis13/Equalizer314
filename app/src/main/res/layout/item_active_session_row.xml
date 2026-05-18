@@ -46,11 +46,15 @@
             android:ellipsize="end" />
     </LinearLayout>
 
-    <!-- Source badge — BROADCAST (filled speaker) vs DETECTED (outlined). -->
+    <!-- Animated "now playing" pulse — speaker cone with sound waves
+         emanating. Indicates the row's app is outputting audio right
+         now. Source distinction (BROADCAST vs DETECTED) lives in the
+         meta TextView, so this is purely a "this is live" affordance. -->
     <ImageView
-        android:id="@+id/sessionRowSourceBadge"
+        android:id="@+id/sessionRowPulse"
         android:layout_width="20dp"
         android:layout_height="20dp"
         android:layout_marginStart="8dp"
-        android:contentDescription="@null" />
+        android:contentDescription="@null"
+        android:src="@drawable/anim_speaker_pulse" />
 </LinearLayout>

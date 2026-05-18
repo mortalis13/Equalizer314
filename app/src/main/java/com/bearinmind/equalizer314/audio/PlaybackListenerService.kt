@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -94,6 +95,29 @@ class PlaybackListenerService : NotificationListenerService() {
             thread?.quitSafely()
         }
         super.onListenerDisconnected()
+    }
+
+    /** Packages whose active MediaController reports
+     *  [PlaybackState.STATE_PLAYING] right now. Used by the receiver to
+     *  toggle the per-row speaker-pulse animation. Apps that don't
+     *  register a MediaSession (some games, custom players) will be
+     *  absent here even if they're outputting — acceptable trade-off
+     *  since almost every audio-EQ-relevant app uses MediaSession. */
+    private fun collectActivelyPlayingPackages(): Set<String> {
+        return try {
+            val msm = getSystemService(MediaSessionManager::class.java) ?: return emptySet()
+            val component = ComponentName(this, PlaybackListenerService::class.java)
+            val controllers = msm.getActiveSessions(component) ?: return emptySet()
+            val own = packageName
+            controllers.asSequence()
+                .filter { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+                .mapNotNull { it.packageName }
+                .filter { it != own && it.isNotBlank() }
+                .toSet()
+        } catch (t: Throwable) {
+            Log.w(TAG, "playbackState lookup failed", t)
+            emptySet()
+        }
     }
 
     /** Public-API fallback when audioserver's `dumpAsync` is denied.
@@ -207,13 +231,27 @@ class PlaybackListenerService : NotificationListenerService() {
             }
         }
 
-        Log.d(TAG, "snapshot detected=${merged.size} packages")
+        // Per-package playback state: packages whose MediaController
+        // reports PlaybackState.STATE_PLAYING right now. The session
+        // manager surfaces this on Samsung even when dumpsys is denied.
+        // The receiver uses this to decide whether each "Now playing"
+        // row animates the speaker pulse — present-but-paused rows go
+        // static.
+        val playingNow = collectActivelyPlayingPackages()
+
+        Log.d(TAG, "snapshot detected=${merged.size} packages, playing=${playingNow.size}")
 
         // Pack into a Bundle of int[]s (Map<String, Set<Int>> isn't
         // parcelable). The receiver decodes by iterating keySet().
         val bundle = Bundle()
         for ((pkg, sids) in merged) {
             bundle.putIntArray(pkg, sids.toIntArray())
+        }
+        if (playingNow.isNotEmpty()) {
+            bundle.putStringArray(
+                EqService.EXTRA_PLAYING_PACKAGES_KEY,
+                playingNow.toTypedArray(),
+            )
         }
         val intent = Intent(this, EqService::class.java)
             .setAction(EqService.ACTION_PLAYBACK_DETECTED)

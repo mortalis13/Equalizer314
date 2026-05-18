@@ -1,0 +1,18 @@
+<!-- Looped "now playing" speaker pulse — cone → 1 wave → 2 waves →
+     loop. Used by ChannelInputActivity to indicate that a row in the
+     "Now playing" list is actively outputting audio right now.
+
+     Total cycle 1.2s (400ms × 3 frames) — slow enough to read as a
+     gentle pulse, fast enough to feel "live." -->
+<animation-list xmlns:android="http://schemas.android.com/apk/res/android"
+    android:oneshot="false">
+    <item
+        android:drawable="@drawable/ic_speaker_wave_0"
+        android:duration="400" />
+    <item
+        android:drawable="@drawable/ic_speaker_wave_1"
+        android:duration="400" />
+    <item
+        android:drawable="@drawable/ic_speaker_wave_2"
+        android:duration="400" />
+</animation-list>
