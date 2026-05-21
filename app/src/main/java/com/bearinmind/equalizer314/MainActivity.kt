@@ -294,7 +294,17 @@ class  MainActivity : AppCompatActivity() {
                 stateManager.serviceBound = false
             }
             animatePowerFab(false)
-            showPowerSnackbar(false)
+            // Side-effect stops (e.g. routing-mode flip in Channel
+            // Input) carry EXTRA_SILENT_STOP. We still need the rest
+            // of the cleanup, but skip the toast — it surprises the
+            // user with a state change they didn't initiate.
+            val silent = intent?.getBooleanExtra(EqService.EXTRA_SILENT_STOP, false) == true
+            if (silent) {
+                eqPrefs.savePowerState(false)
+                com.bearinmind.equalizer314.ui.BottomNavHelper.updatePowerFab(this@MainActivity, false)
+            } else {
+                showPowerSnackbar(false)
+            }
         }
     }
 

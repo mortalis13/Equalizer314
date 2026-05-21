@@ -24,6 +24,11 @@ class EqService : Service() {
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "com.bearinmind.equalizer314.STOP_EQ"
         const val ACTION_EQ_STOPPED = "com.bearinmind.equalizer314.EQ_STOPPED"
+        /** Set on [ACTION_EQ_STOPPED] broadcasts whose source is an
+         *  internal state change (e.g. routing-mode switch) rather
+         *  than a user gesture. MainActivity's receiver still runs
+         *  its full state cleanup but skips the user-facing toast. */
+        const val EXTRA_SILENT_STOP = "silent_stop"
         // Forwarded from AudioSessionReceiver when an audio-effect
         // control session opens / closes for a per-app session.
         const val ACTION_ATTACH_SESSION = "com.bearinmind.equalizer314.ATTACH_SESSION"
@@ -205,7 +210,15 @@ class EqService : Service() {
                 val prefs = EqPreferencesManager(this)
                 if (prefs.getAudioRoutingMode() == 1) {
                     dynamicsManager.stop()
-                    sendBroadcast(Intent(ACTION_EQ_STOPPED).setPackage(packageName))
+                    // Mark this stop as silent — the user didn't tap
+                    // the power button, they flipped routing mode. We
+                    // still want MainActivity to drop its bind /
+                    // animate the FAB off, but the toast is noise here.
+                    sendBroadcast(
+                        Intent(ACTION_EQ_STOPPED)
+                            .setPackage(packageName)
+                            .putExtra(EXTRA_SILENT_STOP, true),
+                    )
                 }
                 // Re-evaluate per-session reverbs — applyReverbParamsToAll
                 // handles both "mode just became Session-based with the

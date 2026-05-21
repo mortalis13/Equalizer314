@@ -254,24 +254,29 @@ class AudioEffectsPipelineActivity : AppCompatActivity() {
 
     /** Computes which scope is currently driving the audio for the
      *  pipeline-screen priority pill. The hierarchy (highest first):
-     *    1. Session-based routing → Channel Input is in charge.
+     *    1. Session-based routing → Channel Input is in charge
+     *       (per-app DPs handle audio).
      *    2. System-wide + Device auto-switch ON → Audio Output is in
      *       charge (overwrites the global preset on route changes).
-     *    3. System-wide + Device auto-switch OFF → neither card is
-     *       automatically in charge; both render the yellow
-     *       "Not Priority" pill so the user sees the manual state
-     *       at a glance.
+     *    3. System-wide + Device auto-switch OFF → Channel Input is
+     *       in charge by default (the global session-0 mix is the
+     *       only scope doing anything; Channel Input represents that
+     *       entry point).
      *  Returns null for every effect outside the two relevant cards;
-     *  the adapter then hides all three indicators on that card. */
+     *  the adapter then hides the pill on that card. */
     private fun currentPriorityFor(effect: EffectId): CardPriority? {
         val sessionBased = eqPrefs.getAudioRoutingMode() == 1
         val autoSwitch = eqPrefs.getDeviceAutoSwitchEnabled()
+        // Audio Output wins only in the narrow System-wide + auto-
+        // switch ON window. Every other state hands Priority to
+        // Channel Input — including plain System-wide manual mode,
+        // since the global session-0 preset is the audio scope.
+        val outputWins = !sessionBased && autoSwitch
         return when (effect) {
             EffectId.AUDIO_INPUT ->
-                if (sessionBased) CardPriority.PRIORITY else CardPriority.NOT_PRIORITY
+                if (outputWins) CardPriority.NOT_PRIORITY else CardPriority.PRIORITY
             EffectId.AUDIO_OUTPUT ->
-                if (!sessionBased && autoSwitch) CardPriority.PRIORITY
-                else CardPriority.NOT_PRIORITY
+                if (outputWins) CardPriority.PRIORITY else CardPriority.NOT_PRIORITY
             else -> null
         }
     }
