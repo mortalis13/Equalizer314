@@ -70,6 +70,10 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    // RecyclerView 1.2.0+ — needed for ViewHolder.bindingAdapterPosition.
+    // Used to be pulled in transitively by androidx.media3; declaring
+    // explicitly now that the media3 deps are gone.
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
 
     // Lifecycle
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
@@ -80,11 +84,14 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // ExoPlayer (Media3) for audio playback with custom AudioProcessors
-    val media3Version = "1.2.0"
-    implementation("androidx.media3:media3-exoplayer:$media3Version")
-    implementation("androidx.media3:media3-ui:$media3Version")
-    implementation("androidx.media3:media3-session:$media3Version")
+    // (Removed unused androidx.media3-exoplayer/ui/session dependencies.
+    // They were an artefact of an earlier capture-based design that
+    // never shipped. The current implementation uses Android's native
+    // DynamicsProcessing API and EnvironmentalReverb directly, no
+    // ExoPlayer involvement. Removing them also strips the transitively-
+    // added android.permission.ACCESS_NETWORK_STATE — "View network
+    // connections" on the Play Store / settings UI — which was the
+    // only thing that permission was there for.)
 
     // Testing
     testImplementation("junit:junit:4.13.2")
