@@ -84,6 +84,13 @@ class ChannelInputActivity : AppCompatActivity() {
     private lateinit var enableDetectionBody: TextView
     private lateinit var enableDetectionSwitch: MaterialSwitch
 
+    // "Skip system sounds" toggle — gates EqService's bypass of the
+    // global DP on notification / ringtone / alarm / call streams.
+    // Default ON in prefs; tap to flip and the change is applied
+    // immediately via EqService.ACTION_APPLY_BYPASS_PREF.
+    private lateinit var bypassSystemSoundsCard: MaterialCardView
+    private lateinit var bypassSystemSoundsSwitch: MaterialSwitch
+
     // Bound EqService so we can read the live set of attached sessions
     // (SessionEffectManager.getActiveSessions). Null when the service
     // isn't running — Session-based mode shows the empty card in that
@@ -195,6 +202,34 @@ class ChannelInputActivity : AppCompatActivity() {
         // to Settings — feels right because the entire card is the
         // affordance.
         enableDetectionCard.setOnClickListener { enableDetectionSwitch.performClick() }
+
+        // "Skip system sounds" toggle — safety default (on) protects
+        // against the 127-band FFT pre-EQ + limiter distorting short
+        // transient streams like notifications. Flipping it fires
+        // ACTION_APPLY_BYPASS_PREF so the change takes effect now,
+        // not on the next playback-config callback.
+        bypassSystemSoundsCard = findViewById(R.id.bypassSystemSoundsCard)
+        bypassSystemSoundsSwitch = findViewById(R.id.bypassSystemSoundsSwitch)
+        bypassSystemSoundsSwitch.isChecked = eqPrefs.getBypassSystemSounds()
+        val toggleBypass = {
+            val next = !eqPrefs.getBypassSystemSounds()
+            eqPrefs.setBypassSystemSounds(next)
+            bypassSystemSoundsSwitch.isChecked = next
+            val intent = Intent(this, com.bearinmind.equalizer314.audio.EqService::class.java)
+                .setAction(com.bearinmind.equalizer314.audio.EqService.ACTION_APPLY_BYPASS_PREF)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+            } catch (_: Throwable) {
+                // Service might not be running — that's fine, the pref
+                // is saved and will be picked up the next time EQ starts.
+            }
+        }
+        bypassSystemSoundsSwitch.setOnClickListener { toggleBypass() }
+        bypassSystemSoundsCard.setOnClickListener { toggleBypass() }
 
         setupRoutingModeChips()
         loadApps()

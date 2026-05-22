@@ -5,7 +5,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
 import android.os.Binder
 import android.widget.Toast
 import android.os.Build
@@ -79,8 +81,33 @@ class EqService : Service() {
          *  detection path; broadcast-source effects survive because they
          *  have their own CLOSE lifecycle. */
         const val ACTION_RELEASE_DETECTED = "com.bearinmind.equalizer314.RELEASE_DETECTED"
+        /** Fired by ChannelInputActivity when the user flips the
+         *  "Skip system sounds" toggle. Service re-evaluates the
+         *  bypass against the current playback configurations so the
+         *  change takes effect immediately, not on next callback. */
+        const val ACTION_APPLY_BYPASS_PREF = "com.bearinmind.equalizer314.APPLY_BYPASS_PREF"
         const val EXTRA_SESSION_ID = "session_id"
         const val EXTRA_PACKAGE_NAME = "package_name"
+
+        /** AudioAttributes usages that should *not* be EQ'd. Notification
+         *  / ringtone / alarm / call / navigation / assistant streams
+         *  are short and transient-heavy — they don't survive the
+         *  127-band FFT pre-EQ + limiter cleanly (cracking on Samsung
+         *  starting in 0.0.7). USAGE_MEDIA, USAGE_GAME, USAGE_UNKNOWN
+         *  stay processed; everything in this set triggers a bypass
+         *  while the stream is active, restoring it the moment the
+         *  stream stops. */
+        private val BYPASS_USAGES = setOf(
+            AudioAttributes.USAGE_NOTIFICATION,
+            AudioAttributes.USAGE_NOTIFICATION_RINGTONE,
+            AudioAttributes.USAGE_ALARM,
+            AudioAttributes.USAGE_VOICE_COMMUNICATION,
+            AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING,
+            AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY,
+            AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE,
+            AudioAttributes.USAGE_ASSISTANCE_SONIFICATION,
+            AudioAttributes.USAGE_ASSISTANT,
+        )
 
         fun start(context: Context) {
             val intent = Intent(context, EqService::class.java)
@@ -118,6 +145,63 @@ class EqService : Service() {
         }
     }
 
+    /** Last seen "system sound active" state — tracked so we only call
+     *  setEnabled() on actual transitions, not on every callback. */
+    private var systemSoundBypassActive = false
+
+    /** Tracks active playback usages and bypasses the global DP while
+     *  any "dangerous" usage is playing — notifications, ringtones,
+     *  alarms, voice calls, navigation prompts, etc. These streams are
+     *  short transient-heavy signals that don't survive the 127-band
+     *  FFT pre-EQ + aggressive limiter cleanly (notification audio
+     *  came out distorted / crackling). The DP stays attached so the
+     *  re-enable is a single `enabled = true` write — no rebuild. */
+    private val systemSoundCallback = object : AudioManager.AudioPlaybackCallback() {
+        override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+            applySystemSoundBypass(configs ?: emptyList())
+        }
+    }
+
+    /** Sets the global DP's enabled flag based on whether any active
+     *  stream's usage is in [BYPASS_USAGES]. Pure transition-driven —
+     *  only writes `setEnabled` when the bypass state actually flips
+     *  so we don't churn the audio framework on every callback.
+     *
+     *  Gated by the user's [EqPreferencesManager.getBypassSystemSounds]
+     *  toggle (default on). When the user has disabled the bypass, we
+     *  make sure the DP is re-enabled (in case it was previously
+     *  bypassed) and short-circuit — every stream gets EQ'd. */
+    private fun applySystemSoundBypass(configs: List<AudioPlaybackConfiguration>) {
+        val bypassEnabled = EqPreferencesManager(this).getBypassSystemSounds()
+        if (!bypassEnabled) {
+            if (systemSoundBypassActive) {
+                systemSoundBypassActive = false
+                if (dynamicsManager.isActive) dynamicsManager.setEnabled(true)
+                Log.d(TAG, "system-sound bypass disabled by user — DP re-enabled")
+            }
+            return
+        }
+        val anySystemSound = configs.any { c -> c.audioAttributes.usage in BYPASS_USAGES }
+        if (anySystemSound == systemSoundBypassActive) return
+        systemSoundBypassActive = anySystemSound
+        if (dynamicsManager.isActive) {
+            // Only flip the global DP. Per-session DPs (Session-based
+            // routing) live on a specific app's audio session and never
+            // see notification audio anyway.
+            dynamicsManager.setEnabled(!anySystemSound)
+            Log.d(TAG, "system sound ${if (anySystemSound) "started" else "stopped"} — DP ${if (anySystemSound) "bypassed" else "re-enabled"}")
+        }
+    }
+
+    /** One-shot read of the current playback config list. Called the
+     *  instant the DP starts so a notification already playing at
+     *  power-on flips the bypass on without waiting for the next
+     *  config-change callback. */
+    private fun syncSystemSoundBypassFromCurrent() {
+        val am = getSystemService(AudioManager::class.java) ?: return
+        applySystemSoundBypass(am.activePlaybackConfigurations.orEmpty())
+    }
+
     inner class EqBinder : Binder() {
         val service: EqService get() = this@EqService
     }
@@ -149,6 +233,12 @@ class EqService : Service() {
                 IntentFilter("android.media.VOLUME_CHANGED_ACTION")
             )
         }
+
+        // Register the system-sound bypass callback unconditionally —
+        // AudioPlaybackCallback needs no permission, no NLS bind. The
+        // callback short-circuits when DP isn't running, so it's cheap.
+        getSystemService(AudioManager::class.java)
+            ?.registerAudioPlaybackCallback(systemSoundCallback, null)
 
         // Per-output-device EQ auto-switching. Detection lives in this
         // service so it keeps working when MainActivity is closed.
@@ -236,6 +326,7 @@ class EqService : Service() {
                     if (dynamicsManager.isActive) {
                         p.savePowerState(true)
                         setDpRunning(true)
+                        syncSystemSoundBypassFromCurrent()
                         showDpStateToast(started = true)
                         sendBroadcast(Intent(ACTION_EQ_STARTED).setPackage(packageName))
                     } else {
@@ -269,6 +360,11 @@ class EqService : Service() {
             ACTION_RELEASE_DETECTED -> {
                 startForeground(NOTIFICATION_ID, buildNotification())
                 sessionEffects?.releaseDetected()
+                return START_STICKY
+            }
+            ACTION_APPLY_BYPASS_PREF -> {
+                startForeground(NOTIFICATION_ID, buildNotification())
+                syncSystemSoundBypassFromCurrent()
                 return START_STICKY
             }
             ACTION_PLAYBACK_DETECTED -> {
@@ -335,6 +431,7 @@ class EqService : Service() {
         dynamicsManager.start(eq)
         val active = dynamicsManager.isActive
         setDpRunning(active)
+        if (active) syncSystemSoundBypassFromCurrent()
         return active
     }
 
@@ -390,6 +487,10 @@ class EqService : Service() {
 
     override fun onDestroy() {
         try { unregisterReceiver(volumeReceiver) } catch (_: Exception) {}
+        try {
+            getSystemService(AudioManager::class.java)
+                ?.unregisterAudioPlaybackCallback(systemSoundCallback)
+        } catch (_: Exception) {}
         routingMonitor?.stop()
         routingMonitor = null
         routeCoordinator = null

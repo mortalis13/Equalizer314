@@ -80,6 +80,11 @@
                  only; no notifications are read). -->
             <include layout="@layout/card_enable_detection" />
 
+            <!-- "Skip system sounds" toggle — default ON. Bypasses the
+                 global DP on notification/ringtone/alarm/call streams
+                 to avoid the 127-band pre-EQ + limiter distorting them. -->
+            <include layout="@layout/card_bypass_system_sounds" />
+
             <!-- Routing mode selector — placed directly under the
                  Session detection card so the two top-level toggles
                  read as one settings group. -->

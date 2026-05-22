@@ -697,6 +697,20 @@ class EqPreferencesManager(context: Context) {
         appBindingsPrefs.edit().putInt("audio_routing_mode", mode).apply()
     }
 
+    /** Master toggle for the system-sound bypass. When `true` (the
+     *  default), EqService disables the global DP while any
+     *  notification, ringtone, alarm, voice-call, navigation prompt,
+     *  or assistant stream is playing — protects against distortion
+     *  on short transient-heavy audio that the 127-band FFT pre-EQ +
+     *  limiter chain can't handle cleanly. Users who want every
+     *  system sound run through the EQ can flip this off.  */
+    fun getBypassSystemSounds(): Boolean =
+        appBindingsPrefs.getBoolean("bypass_system_sounds", true)
+
+    fun setBypassSystemSounds(enabled: Boolean) {
+        appBindingsPrefs.edit().putBoolean("bypass_system_sounds", enabled).apply()
+    }
+
     /** Master toggle for device-binding auto-switching on the Audio
      *  Output screen. When `true` (default), connecting a bound
      *  output device auto-applies its preset via
