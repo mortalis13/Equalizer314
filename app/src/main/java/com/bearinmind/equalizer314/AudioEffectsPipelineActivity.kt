@@ -75,6 +75,25 @@ class AudioEffectsPipelineActivity : AppCompatActivity() {
 
         findViewById<ImageButton>(R.id.audioPipelineBackButton).setOnClickListener { finish() }
 
+        // Info button toggles the "how-to" card with the same smooth
+        // height animation the Apps / Devices sections use elsewhere.
+        // The card itself sits between the top bar and the pipeline
+        // list, hidden by default in XML. The icon brightens when the
+        // card is visible and dims again when hidden so the user has
+        // a glance-clear "lit / not lit" cue.
+        val infoCard = findViewById<MaterialCardView>(R.id.audioPipelineInfoCard)
+        val infoButton = findViewById<ImageButton>(R.id.audioPipelineInfoButton)
+        infoButton.setOnClickListener {
+            // Read the pre-toggle visibility, flip it, then drive both
+            // the card animation and the icon tint off the predicted
+            // next state. (toggleInfoCard changes visibility itself —
+            // synchronously on expand, on animation-end on collapse —
+            // so reading the live value after the call is racy.)
+            val willBeVisible = infoCard.visibility != View.VISIBLE
+            toggleInfoCard(infoCard)
+            updateInfoButtonTint(infoButton, lit = willBeVisible)
+        }
+
         recyclerView = findViewById(R.id.audioPipelineRecyclerView)
         recyclerView.layoutManager = LinearLayoutManager(this)
         loadOrder()
@@ -239,6 +258,72 @@ class AudioEffectsPipelineActivity : AppCompatActivity() {
             if (outPos >= 0) adapter.notifyItemChanged(outPos)
             val inPos = items.indexOf(EffectId.AUDIO_INPUT)
             if (inPos >= 0) adapter.notifyItemChanged(inPos)
+        }
+    }
+
+    /** Tints the info button bright when the card is shown (lit
+     *  state, `colorOnSurface`) and dim when it's hidden
+     *  (`colorOnSurfaceVariant`). The dim color is the same one the
+     *  rest of the app uses for secondary glyphs, so the icon reads
+     *  as "off" at a glance. */
+    private fun updateInfoButtonTint(button: ImageButton, lit: Boolean) {
+        val attr = if (lit)
+            com.google.android.material.R.attr.colorOnSurface
+        else
+            com.google.android.material.R.attr.colorOnSurfaceVariant
+        val tint = com.google.android.material.color.MaterialColors.getColor(button, attr)
+        button.imageTintList = android.content.res.ColorStateList.valueOf(tint)
+    }
+
+    /** Smooth height-based show/hide for the info card. Same animation
+     *  feel as the Apps / Devices collapsible sections elsewhere in
+     *  the app — 500 ms FastOutSlowInInterpolator on the View's
+     *  `layoutParams.height` so the show / hide reads as a deliberate
+     *  slide rather than a pop. */
+    private fun toggleInfoCard(card: View) {
+        val expand = card.visibility != View.VISIBLE
+        val interp = androidx.interpolator.view.animation.FastOutSlowInInterpolator()
+        val duration = 500L
+        if (expand) {
+            card.visibility = View.VISIBLE
+            val parent = card.parent as View
+            val widthSpec = View.MeasureSpec.makeMeasureSpec(parent.width, View.MeasureSpec.EXACTLY)
+            val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            card.measure(widthSpec, heightSpec)
+            val target = card.measuredHeight
+            android.animation.ValueAnimator.ofInt(0, target).apply {
+                this.duration = duration
+                interpolator = interp
+                addUpdateListener {
+                    card.layoutParams.height = it.animatedValue as Int
+                    card.requestLayout()
+                }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        card.layoutParams.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                        card.requestLayout()
+                    }
+                })
+                start()
+            }
+        } else {
+            val start = card.height
+            android.animation.ValueAnimator.ofInt(start, 0).apply {
+                this.duration = duration
+                interpolator = interp
+                addUpdateListener {
+                    card.layoutParams.height = it.animatedValue as Int
+                    card.requestLayout()
+                }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        card.visibility = View.GONE
+                        card.layoutParams.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                        card.requestLayout()
+                    }
+                })
+                start()
+            }
         }
     }
 

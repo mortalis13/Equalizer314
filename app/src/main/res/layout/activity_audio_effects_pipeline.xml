@@ -35,14 +35,34 @@
             android:textAppearance="@style/TextAppearance.Material3.TitleLarge"
             android:textColor="?attr/colorOnSurface"
             android:paddingStart="8dp" />
+
+        <!-- Info icon on the right side of the title. Tap toggles the
+             how-to card below. Tint starts dim (the card is hidden by
+             default) and brightens when the card is shown. Borderless
+             ripple keeps the round visual matching the back button on
+             the left. -->
+        <ImageButton
+            android:id="@+id/audioPipelineInfoButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_info_outline"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Pipeline info"
+            app:tint="?attr/colorOnSurfaceVariant" />
     </LinearLayout>
 
+    <!-- Info / how-to card. Hidden by default; toggled by the info
+         button in the top bar. Smooth height-based show/hide is
+         applied in AudioEffectsPipelineActivity (same animation
+         pattern as the Apps / Devices collapsible sections). -->
     <com.google.android.material.card.MaterialCardView
+        android:id="@+id/audioPipelineInfoCard"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginStart="16dp"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="12dp"
+        android:visibility="gone"
         app:cardBackgroundColor="@android:color/transparent"
         app:cardCornerRadius="16dp"
         app:cardElevation="0dp"

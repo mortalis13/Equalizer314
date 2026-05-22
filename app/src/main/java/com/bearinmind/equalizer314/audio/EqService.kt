@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioManager
 import android.os.Binder
+import android.widget.Toast
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -23,7 +24,27 @@ class EqService : Service() {
         private const val CHANNEL_ID = "eq_service_channel"
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "com.bearinmind.equalizer314.STOP_EQ"
+        /** Tile-side counterpart to [ACTION_STOP]. Loads the persisted
+         *  EQ state and starts DynamicsProcessing without needing
+         *  MainActivity to be running. */
+        const val ACTION_START_FROM_TILE = "com.bearinmind.equalizer314.START_FROM_TILE"
         const val ACTION_EQ_STOPPED = "com.bearinmind.equalizer314.EQ_STOPPED"
+        /** Broadcast on a successful start from the QS tile (or any
+         *  other headless start path), so MainActivity can re-sync its
+         *  UI if it's currently in the foreground. */
+        const val ACTION_EQ_STARTED = "com.bearinmind.equalizer314.EQ_STARTED"
+
+        /** In-process flag the QS tile reads to render its on/off
+         *  state authoritatively. Set whenever the global DP changes
+         *  state — preferences can drift (MainActivity resets the
+         *  power-state pref on every cold launch by design), so the
+         *  tile needs a live signal it can trust. Same-process volatile
+         *  read is safe and cheap. */
+        @Volatile
+        var isDpRunning: Boolean = false
+            private set
+
+        internal fun setDpRunning(running: Boolean) { isDpRunning = running }
         /** Set on [ACTION_EQ_STOPPED] broadcasts whose source is an
          *  internal state change (e.g. routing-mode switch) rather
          *  than a user gesture. MainActivity's receiver still runs
@@ -103,6 +124,16 @@ class EqService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
+    /** Surfaces the same "DynamicsProcessing Start/Stop" toast as a
+     *  power-FAB tap, but fires from the service so it appears even
+     *  when MainActivity is closed (QS-tile and notification-button
+     *  paths). Called from onStartCommand which runs on the main
+     *  thread, so Toast usage here is safe. */
+    private fun showDpStateToast(started: Boolean) {
+        val message = if (started) "DynamicsProcessing Start" else "DynamicsProcessing Stop"
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -151,11 +182,69 @@ class EqService : Service() {
             ACTION_STOP -> {
                 dynamicsManager.stop()
                 sessionEffects?.releaseAll()
+                // Persist power-off here so tile / notification taps
+                // sync the pref even when MainActivity isn't around to
+                // run its eqStoppedReceiver.
+                EqPreferencesManager(this).savePowerState(false)
+                setDpRunning(false)
+                showDpStateToast(started = false)
                 sendBroadcast(Intent(ACTION_EQ_STOPPED).setPackage(packageName))
                 @Suppress("DEPRECATION")
                 stopForeground(true)
                 stopSelf()
                 return START_NOT_STICKY
+            }
+            ACTION_START_FROM_TILE -> {
+                Log.d(TAG, "ACTION_START_FROM_TILE — toggle requested, dynamicsManager.isActive=${dynamicsManager.isActive}")
+                startForeground(NOTIFICATION_ID, buildNotification())
+                if (dynamicsManager.isActive) {
+                    // Tile was tapped while the DP is already running —
+                    // toggle off. Same path ACTION_STOP runs.
+                    dynamicsManager.stop()
+                    sessionEffects?.releaseAll()
+                    EqPreferencesManager(this).savePowerState(false)
+                    setDpRunning(false)
+                    showDpStateToast(started = false)
+                    sendBroadcast(Intent(ACTION_EQ_STOPPED).setPackage(packageName))
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                val eq = loadPersistedParametricEq()
+                if (eq != null) {
+                    // Configure DP properties from prefs first — mirrors
+                    // EqStateManager.doStartEq's setup so a tile-driven
+                    // start gives the user the same audio as a FAB tap.
+                    val p = EqPreferencesManager(this)
+                    with(dynamicsManager) {
+                        preampGainDb = p.getPreampGain()
+                        autoGainEnabled = p.getAutoGainEnabled()
+                        channelBalancePercent = p.getChannelBalancePercent()
+                        leftChannelGainDb = p.getLeftChannelGainDb()
+                        rightChannelGainDb = p.getRightChannelGainDb()
+                        limiterEnabled = p.getLimiterEnabled()
+                        limiterAttackMs = p.getLimiterAttack()
+                        limiterReleaseMs = p.getLimiterRelease()
+                        limiterRatio = p.getLimiterRatio()
+                        limiterThresholdDb = p.getLimiterThreshold()
+                        limiterPostGainDb = p.getLimiterPostGain()
+                        mbcEnabled = p.getMbcEnabled()
+                        mbcBandCount = p.getMbcBandCount()
+                    }
+                    dynamicsManager.start(eq)
+                    if (dynamicsManager.isActive) {
+                        p.savePowerState(true)
+                        setDpRunning(true)
+                        showDpStateToast(started = true)
+                        sendBroadcast(Intent(ACTION_EQ_STARTED).setPackage(packageName))
+                    } else {
+                        Log.w(TAG, "ACTION_START_FROM_TILE: dynamicsManager.start failed silently")
+                    }
+                } else {
+                    Log.w(TAG, "ACTION_START_FROM_TILE: no persisted bands to start with")
+                }
+                return START_STICKY
             }
             ACTION_ATTACH_SESSION -> {
                 startForeground(NOTIFICATION_ID, buildNotification())
@@ -244,7 +333,9 @@ class EqService : Service() {
     fun startEq(eq: ParametricEqualizer): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
         dynamicsManager.start(eq)
-        return dynamicsManager.isActive
+        val active = dynamicsManager.isActive
+        setDpRunning(active)
+        return active
     }
 
     fun updateEq(eq: ParametricEqualizer) {
@@ -263,6 +354,35 @@ class EqService : Service() {
         dynamicsManager.applyMbcBands(bands, crossovers)
     }
 
+    /** Builds a [ParametricEqualizer] from the live `eq_settings.bands`
+     *  JSON the rest of the app persists into. Used by the QS tile to
+     *  kick the EQ on without MainActivity needing to be alive. Returns
+     *  null when there's no usable band data (fresh install, corrupt
+     *  state, etc.) — caller logs and bails. */
+    private fun loadPersistedParametricEq(): ParametricEqualizer? {
+        val prefs = getSharedPreferences("eq_settings", Context.MODE_PRIVATE)
+        val str = runCatching { prefs.getString("bands", null) }.getOrNull() ?: return null
+        return runCatching {
+            val arr = org.json.JSONArray(str)
+            val eq = ParametricEqualizer()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val type = runCatching {
+                    com.bearinmind.equalizer314.dsp.BiquadFilter.FilterType.valueOf(o.getString("filterType"))
+                }.getOrDefault(com.bearinmind.equalizer314.dsp.BiquadFilter.FilterType.BELL)
+                eq.addBand(
+                    o.getDouble("frequency").toFloat(),
+                    o.getDouble("gain").toFloat(),
+                    type,
+                    o.getDouble("q"),
+                )
+                if (o.has("enabled")) eq.setBandEnabled(i, o.getBoolean("enabled"))
+            }
+            eq.isEnabled = true
+            eq
+        }.getOrNull()
+    }
+
     private fun updateNotification() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(NOTIFICATION_ID, buildNotification())
@@ -276,6 +396,10 @@ class EqService : Service() {
         sessionEffects?.releaseAll()
         sessionEffects = null
         dynamicsManager.stop()
+        // Make sure the QS tile flag follows process death — otherwise
+        // a system-reclaim could leave the tile stuck reading "on"
+        // until the next startEq writes it again.
+        setDpRunning(false)
         Log.d(TAG, "EqService destroyed")
         super.onDestroy()
     }

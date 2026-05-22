@@ -285,6 +285,34 @@ class  MainActivity : AppCompatActivity() {
     private val hzLogMax = kotlin.math.log10(20000f)
 
     // Listen for EQ stopped from notification "Turn Off" button
+    /** Fires when EqService kicks the DP up from a headless context
+     *  (currently only the Quick Settings tile). Re-syncs the FAB +
+     *  state-manager flag so MainActivity reflects the new state if
+     *  the user is sitting on it when the tile is tapped, and shows
+     *  the same "DynamicsProcessing Start" toast a FAB tap would —
+     *  the stop receiver already does the symmetric "Stop" toast, so
+     *  this completes the pair. */
+    private val eqStartedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            stateManager.isProcessing = true
+            animatePowerFab(true)
+            com.bearinmind.equalizer314.ui.BottomNavHelper.updatePowerFab(this@MainActivity, true)
+            // Toast is fired by EqService directly so it surfaces even
+            // when MainActivity isn't alive (QS tile path). Don't
+            // double up here.
+            // Bind so the activity can read DP state going forward.
+            if (!stateManager.serviceBound) {
+                try {
+                    bindService(
+                        Intent(this@MainActivity, EqService::class.java),
+                        stateManager.serviceConnection,
+                        BIND_AUTO_CREATE,
+                    )
+                } catch (_: Throwable) {}
+            }
+        }
+    }
+
     private val eqStoppedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             stateManager.isProcessing = false
@@ -294,17 +322,12 @@ class  MainActivity : AppCompatActivity() {
                 stateManager.serviceBound = false
             }
             animatePowerFab(false)
-            // Side-effect stops (e.g. routing-mode flip in Channel
-            // Input) carry EXTRA_SILENT_STOP. We still need the rest
-            // of the cleanup, but skip the toast — it surprises the
-            // user with a state change they didn't initiate.
-            val silent = intent?.getBooleanExtra(EqService.EXTRA_SILENT_STOP, false) == true
-            if (silent) {
-                eqPrefs.savePowerState(false)
-                com.bearinmind.equalizer314.ui.BottomNavHelper.updatePowerFab(this@MainActivity, false)
-            } else {
-                showPowerSnackbar(false)
-            }
+            // State commit only — toast is now fired by EqService
+            // (so it surfaces with the app closed too). EXTRA_SILENT_STOP
+            // used to gate the toast here; now that the toast lives on
+            // the service side, both branches do the same thing.
+            eqPrefs.savePowerState(false)
+            com.bearinmind.equalizer314.ui.BottomNavHelper.updatePowerFab(this@MainActivity, false)
         }
     }
 
@@ -323,9 +346,16 @@ class  MainActivity : AppCompatActivity() {
         eqPrefs = EqPreferencesManager(this)
         stateManager = EqStateManager(this, eqPrefs)
 
-        // On fresh app launch, reset power state — user must explicitly turn on
+        // On fresh app launch, reset power state — EXCEPT when the
+        // global DP is actually running (e.g. user toggled it on via
+        // the QS tile while the activity wasn't alive). EqService is a
+        // foreground service that survives MainActivity death, so its
+        // `isDpRunning` flag is the source of truth. If we blindly
+        // reset to false here, returning to the app would show OFF
+        // while audio is still being EQ'd.
         if (savedInstanceState == null) {
-            eqPrefs.savePowerState(false)
+            val dpAlreadyRunning = EqService.isDpRunning
+            eqPrefs.savePowerState(dpAlreadyRunning)
             stateManager.pendingStartEq = false
             // Also re-lock the Experimental settings on every fresh launch
             eqPrefs.saveExperimentalUnlocked(false)
@@ -348,10 +378,20 @@ class  MainActivity : AppCompatActivity() {
                 IntentFilter(EqService.ACTION_EQ_STOPPED),
                 RECEIVER_NOT_EXPORTED
             )
+            registerReceiver(
+                eqStartedReceiver,
+                IntentFilter(EqService.ACTION_EQ_STARTED),
+                RECEIVER_NOT_EXPORTED
+            )
         } else {
             registerReceiver(
                 eqStoppedReceiver,
                 IntentFilter(EqService.ACTION_EQ_STOPPED)
+            )
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(
+                eqStartedReceiver,
+                IntentFilter(EqService.ACTION_EQ_STARTED)
             )
         }
 
@@ -360,6 +400,25 @@ class  MainActivity : AppCompatActivity() {
         switchEqUiMode(effectiveMode)
         // Ensure rows are properly ordered after views are laid out
         pageEq.post { reorderToggleRows(animate = false) }
+
+        // If the global DP is already running when the activity opens
+        // (e.g. user toggled it on via the QS tile while the activity
+        // was killed), reflect that in the UI and bind to the existing
+        // foreground service so the FAB / EQ updates work as normal.
+        if (EqService.isDpRunning) {
+            stateManager.isProcessing = true
+            animatePowerFab(true)
+            com.bearinmind.equalizer314.ui.BottomNavHelper.updatePowerFab(this, true)
+            if (!stateManager.serviceBound) {
+                try {
+                    bindService(
+                        Intent(this, EqService::class.java),
+                        stateManager.serviceConnection,
+                        BIND_AUTO_CREATE,
+                    )
+                } catch (_: Throwable) {}
+            }
+        }
     }
 
     private fun initViews() {
@@ -3420,6 +3479,7 @@ class  MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         visualizerHelper.stop()
         try { unregisterReceiver(eqStoppedReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(eqStartedReceiver) } catch (_: Exception) {}
         super.onDestroy()
     }
 
