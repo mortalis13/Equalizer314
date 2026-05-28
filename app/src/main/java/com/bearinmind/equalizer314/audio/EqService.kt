@@ -126,7 +126,18 @@ class EqService : Service() {
         }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, EqService::class.java))
+            // Route through ACTION_STOP rather than stopService so the
+            // service stays alive and the persistent notification flips
+            // to "Offline + Turn On". stopService would tear down the
+            // foreground service entirely and the notification would
+            // disappear — fine for shutdown, wrong for a Power-FAB tap.
+            val intent = Intent(context, EqService::class.java)
+                .setAction(ACTION_STOP)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         }
     }
 
@@ -286,27 +297,32 @@ class EqService : Service() {
                 setDpRunning(false)
                 showDpStateToast(started = false)
                 sendBroadcast(Intent(ACTION_EQ_STOPPED).setPackage(packageName))
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-                stopSelf()
-                return START_NOT_STICKY
+                // Keep the service alive so the notification persists
+                // as "Offline + Turn On" — users can flip DP back on
+                // straight from the notification without opening the
+                // app. Refresh the notification to reflect the new
+                // state. The service stays foreground so it's not
+                // memory-reclaimed; tapping Turn On loops through
+                // ACTION_AUTO_START to bring DP back up.
+                updateNotification()
+                return START_STICKY
             }
             ACTION_START_FROM_TILE -> {
                 Log.d(TAG, "ACTION_START_FROM_TILE — toggle requested, dynamicsManager.isActive=${dynamicsManager.isActive}")
                 startForeground(NOTIFICATION_ID, buildNotification())
                 if (dynamicsManager.isActive) {
                     // Tile was tapped while the DP is already running —
-                    // toggle off. Same path ACTION_STOP runs.
+                    // toggle off. Same path ACTION_STOP runs: keep the
+                    // service alive so the notification persists with
+                    // the Turn On affordance.
                     dynamicsManager.stop()
                     sessionEffects?.releaseAll()
                     EqPreferencesManager(this).savePowerState(false)
                     setDpRunning(false)
                     showDpStateToast(started = false)
                     sendBroadcast(Intent(ACTION_EQ_STOPPED).setPackage(packageName))
-                    @Suppress("DEPRECATION")
-                    stopForeground(true)
-                    stopSelf()
-                    return START_NOT_STICKY
+                    updateNotification()
+                    return START_STICKY
                 }
                 val eq = loadPersistedParametricEq()
                 if (eq != null) {
@@ -336,6 +352,7 @@ class EqService : Service() {
                         syncSystemSoundBypassFromCurrent()
                         showDpStateToast(started = true)
                         sendBroadcast(Intent(ACTION_EQ_STARTED).setPackage(packageName))
+                        updateNotification()
                     } else {
                         Log.w(TAG, "ACTION_START_FROM_TILE: dynamicsManager.start failed silently")
                     }
@@ -373,6 +390,7 @@ class EqService : Service() {
                         syncSystemSoundBypassFromCurrent()
                         showDpStateToast(started = true)
                         sendBroadcast(Intent(ACTION_EQ_STARTED).setPackage(packageName))
+                        updateNotification()
                     } else {
                         Log.w(TAG, "ACTION_AUTO_START: dynamicsManager.start failed silently")
                     }
@@ -439,6 +457,7 @@ class EqService : Service() {
                 val prefs = EqPreferencesManager(this)
                 if (prefs.getAudioRoutingMode() == 1) {
                     dynamicsManager.stop()
+                    setDpRunning(false)
                     // Mark this stop as silent — the user didn't tap
                     // the power button, they flipped routing mode. We
                     // still want MainActivity to drop its bind /
@@ -448,6 +467,7 @@ class EqService : Service() {
                             .setPackage(packageName)
                             .putExtra(EXTRA_SILENT_STOP, true),
                     )
+                    updateNotification()
                 }
                 // Re-evaluate per-session reverbs — applyReverbParamsToAll
                 // handles both "mode just became Session-based with the
@@ -475,7 +495,13 @@ class EqService : Service() {
         dynamicsManager.start(eq)
         val active = dynamicsManager.isActive
         setDpRunning(active)
-        if (active) syncSystemSoundBypassFromCurrent()
+        if (active) {
+            syncSystemSoundBypassFromCurrent()
+            // Flip the persistent notification from "Offline" to "Online"
+            // immediately rather than waiting for the next volume-change
+            // tick to repost it.
+            updateNotification()
+        }
         return active
     }
 
@@ -573,11 +599,21 @@ class EqService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val stopIntent = Intent(this, EqService::class.java).apply {
-            action = ACTION_STOP
+        // Notification mirrors the live DP state. When DP is running the
+        // title reads "Equalizer314: Online" and the action button stops
+        // DP via ACTION_STOP. When DP is off the title reads
+        // "Equalizer314: Offline" and the action button restarts DP via
+        // ACTION_AUTO_START. Service stays alive across the toggle so
+        // the notification persists either way.
+        val isOn = dynamicsManager.isActive
+        val toggleIntent = Intent(this, EqService::class.java).apply {
+            action = if (isOn) ACTION_STOP else ACTION_AUTO_START
         }
-        val stopPending = PendingIntent.getService(
-            this, 1, stopIntent,
+        // Different requestCodes for the on/off PendingIntents so Android
+        // doesn't collapse them across a state flip when FLAG_UPDATE_CURRENT
+        // rewrites the extras.
+        val togglePending = PendingIntent.getService(
+            this, if (isOn) 1 else 2, toggleIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -586,14 +622,17 @@ class EqService : Service() {
         val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         val volumePercent = if (maxVol > 0) (currentVol * 100 / maxVol) else 0
 
+        val title = if (isOn) "Equalizer314: Online" else "Equalizer314: Offline"
+        val actionLabel = if (isOn) "Turn Off" else "Turn On"
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_nav_equalizer)
-            .setContentTitle("Equalizer314 Online")
+            .setContentTitle(title)
             .setContentText("Volume: $volumePercent%")
             .setContentIntent(openPending)
             .setOngoing(true)
             .setSilent(true)
-            .addAction(R.drawable.ic_nav_power, "Turn Off", stopPending)
+            .addAction(R.drawable.ic_nav_power, actionLabel, togglePending)
             .build()
     }
 }
