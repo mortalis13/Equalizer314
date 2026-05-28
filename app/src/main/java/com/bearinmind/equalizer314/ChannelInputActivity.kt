@@ -232,6 +232,7 @@ class ChannelInputActivity : AppCompatActivity() {
         bypassSystemSoundsCard.setOnClickListener { toggleBypass() }
 
         setupRoutingModeChips()
+        setupAppsFilterChips()
         loadApps()
     }
 
@@ -444,6 +445,23 @@ class ChannelInputActivity : AppCompatActivity() {
         }
     }
 
+    private fun setupAppsFilterChips() {
+        val chipGroup = findViewById<ChipGroup>(R.id.appsFilterChips)
+        val filtered = findViewById<Chip>(R.id.appsFilterFiltered)
+        val showAll = findViewById<Chip>(R.id.appsFilterShowAll)
+        when (eqPrefs.getAppListFilterMode()) {
+            1 -> showAll.isChecked = true
+            else -> filtered.isChecked = true
+        }
+        chipGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+            val id = checkedIds.firstOrNull() ?: return@setOnCheckedStateChangeListener
+            val newMode = if (id == R.id.appsFilterShowAll) 1 else 0
+            if (newMode == eqPrefs.getAppListFilterMode()) return@setOnCheckedStateChangeListener
+            eqPrefs.saveAppListFilterMode(newMode)
+            loadApps()
+        }
+    }
+
     override fun finish() {
         super.finish()
         overridePendingTransition(R.anim.fade_in, R.anim.fade_out)
@@ -460,40 +478,63 @@ class ChannelInputActivity : AppCompatActivity() {
             val rows = withContext(Dispatchers.IO) {
                 val pm = packageManager
 
-                // Filter to apps that would actually benefit from EQ —
-                // same heuristics Wavelet / Poweramp EQ use to populate
-                // their app pickers. An app is included if it matches
-                // ANY of:
-                //   (a) declares a MEDIA_BUTTON broadcast receiver
-                //       (Spotify, Poweramp, AIMP, AutoEQ tooling, …)
-                //   (b) declares a MediaBrowserService (the Android-
-                //       Auto-compatible media-app contract)
-                //   (c) handles audio/* MIME types (file-manager-style
-                //       music players)
-                //   (d) we've already seen it broadcast a session
-                //       (catch-all for atypical apps — games etc. that
-                //       still talk to the audio-effect-control system)
-                val mediaButtonApps = pm.queryBroadcastReceivers(
-                    Intent(Intent.ACTION_MEDIA_BUTTON), 0,
-                ).map { it.activityInfo.packageName }.toHashSet()
+                // Two modes, controlled by appsFilterChips:
+                //   FILTERED (default) — same heuristic Wavelet / Poweramp
+                //   EQ use: include an app only if it matches ANY of:
+                //     (a) declares a MEDIA_BUTTON broadcast receiver
+                //         (Spotify, Poweramp, AIMP, …)
+                //     (b) declares a MediaBrowserService (Android Auto
+                //         media-app contract)
+                //     (c) handles audio/* MIME types (file-manager-style
+                //         music players)
+                //     (d) we've already seen it broadcast a session
+                //   plus every app the user has already bound a preset to
+                //   (kept regardless of the heuristic).
+                //   SHOW_ALL — every installed app, alphabetical. Useful
+                //   for games and other apps that declare none of the
+                //   above but still produce audio (eFootball, GTA SA, etc).
+                val showAll = eqPrefs.getAppListFilterMode() == 1
+                val mediaCandidates: Set<String>? = if (showAll) null else {
+                    val mediaButtonApps = pm.queryBroadcastReceivers(
+                        Intent(Intent.ACTION_MEDIA_BUTTON), 0,
+                    ).map { it.activityInfo.packageName }.toHashSet()
 
-                val mediaBrowserApps = pm.queryIntentServices(
-                    Intent("android.media.browse.MediaBrowserService"), 0,
-                ).map { it.serviceInfo.packageName }.toHashSet()
+                    val mediaBrowserApps = pm.queryIntentServices(
+                        Intent("android.media.browse.MediaBrowserService"), 0,
+                    ).map { it.serviceInfo.packageName }.toHashSet()
 
-                val audioMimeApps = pm.queryIntentActivities(
-                    Intent(Intent.ACTION_VIEW).apply { type = "audio/*" }, 0,
-                ).map { it.activityInfo.packageName }.toHashSet()
+                    val audioMimeApps = pm.queryIntentActivities(
+                        Intent(Intent.ACTION_VIEW).apply { type = "audio/*" }, 0,
+                    ).map { it.activityInfo.packageName }.toHashSet()
 
-                val seen = eqPrefs.getAllSeenApps().toHashSet()
-                val bindings = eqPrefs.getAllAppBindings().associateBy { it.packageName }
+                    val seen = eqPrefs.getAllSeenApps().toHashSet()
+                    val bindings = eqPrefs.getAllAppBindings().associateBy { it.packageName }
 
-                val mediaCandidates =
                     mediaButtonApps + mediaBrowserApps + audioMimeApps + seen +
                         bindings.keys  // always show bound apps even if filters drop them
+                }
+
+                // In Show All mode, restrict to packages that declare a
+                // launcher activity (ACTION_MAIN + CATEGORY_LAUNCHER) —
+                // i.e. apps the user would actually see in their app
+                // drawer. Without this filter, getInstalledApplications
+                // returns every package with an <application> tag,
+                // including system providers (com.android.providers.*),
+                // ad / privacy services (com.google.android.adservices.api),
+                // wallpaper services, and OEM background daemons that
+                // aren't user-facing apps. Keep current bindings in the
+                // list regardless so a stale binding to a non-launchable
+                // package is still removable from this screen.
+                val launchablePackages: Set<String>? = if (showAll) {
+                    val launchable = pm.queryIntentActivities(
+                        Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0,
+                    ).map { it.activityInfo.packageName }.toHashSet()
+                    launchable + eqPrefs.getAllAppBindings().map { it.packageName }
+                } else null
 
                 pm.getInstalledApplications(0)
-                    .filter { it.packageName in mediaCandidates }
+                    .filter { mediaCandidates == null || it.packageName in mediaCandidates }
+                    .filter { launchablePackages == null || it.packageName in launchablePackages }
                     .filter { it.packageName != packageName }
                     .map { info ->
                         AppRow(

@@ -697,6 +697,21 @@ class EqPreferencesManager(context: Context) {
         appBindingsPrefs.edit().putInt("audio_routing_mode", mode).apply()
     }
 
+    /** Filter mode for the Channel Input "Apps" section:
+     *   0 = FILTERED — only apps that declare a MEDIA_BUTTON receiver,
+     *       MediaBrowserService, an audio MIME-type handler, have been
+     *       seen playing, or have an existing binding (default).
+     *   1 = SHOW_ALL — every installed app, alphabetical. Useful for
+     *       binding presets to games and other apps that don't declare
+     *       any of the media contracts but still produce audio.
+     */
+    fun getAppListFilterMode(): Int =
+        appBindingsPrefs.getInt("app_list_filter_mode", 0)
+
+    fun saveAppListFilterMode(mode: Int) {
+        appBindingsPrefs.edit().putInt("app_list_filter_mode", mode).apply()
+    }
+
     /** Master toggle for the system-sound bypass. When `true` (the
      *  default), EqService disables the global DP while any
      *  notification, ringtone, alarm, voice-call, navigation prompt,
