@@ -143,8 +143,8 @@ class SessionEffectManager(private val context: Context) {
             return
         }
 
-        val eq = loadPresetEq(binding.presetName)
-        if (eq == null) {
+        val loaded = loadPreset(binding.presetName)
+        if (loaded == null) {
             Log.w(TAG, "Binding for $packageName references missing preset '${binding.presetName}'")
             return
         }
@@ -156,9 +156,9 @@ class SessionEffectManager(private val context: Context) {
         }
 
         try {
-            val dp = createSessionDp(sessionId, eq)
+            val dp = createSessionDp(sessionId, loaded.eq, loaded.preampDb)
             sessions[sessionId] = dp
-            Log.d(TAG, "Attached DP session=$sessionId pkg=$packageName preset=${binding.presetName} source=$source")
+            Log.d(TAG, "Attached DP session=$sessionId pkg=$packageName preset=${binding.presetName} preamp=${"%.1f".format(loaded.preampDb)}dB source=$source")
         } catch (t: Throwable) {
             // Matches Wavelet's a6/n0.java:47 — catch and silently
             // null out on construction failure (another EQ app may
@@ -396,12 +396,15 @@ class SessionEffectManager(private val context: Context) {
     }
 
     /** Build a fresh DP on [sessionId] with the [eq]'s curve applied
-     *  to the Pre-EQ stage (both channels). No MBC / limiter /
-     *  post-EQ on per-session — those are global-only concerns and
-     *  the global DP on session 0 handles them. */
+     *  to the Pre-EQ stage (both channels) and [preampDb] applied via
+     *  the input-gain stage on both channels (matches how the global
+     *  DP on session 0 handles preamp). No MBC / limiter / post-EQ on
+     *  per-session — those are global-only concerns and the global DP
+     *  handles them. */
     private fun createSessionDp(
         sessionId: Int,
         eq: ParametricEqualizer,
+        preampDb: Float = 0f,
     ): DynamicsProcessing {
         // Keep the same band count as the global DP so a preset
         // renders identically across session 0 and the per-app
@@ -436,14 +439,35 @@ class SessionEffectManager(private val context: Context) {
         }
         dp.setPreEqByChannelIndex(0, leftEqObj)
         dp.setPreEqByChannelIndex(1, rightEqObj)
+        // Apply preamp via the DP's native input-gain stage on both
+        // channels — same approach DynamicsProcessingManager uses for
+        // the global DP (setInputGainbyChannel at line ~334), so a
+        // preset sounds identical at session 0 and per-app.
+        if (preampDb != 0f) {
+            try {
+                dp.setInputGainbyChannel(0, preampDb)
+                dp.setInputGainbyChannel(1, preampDb)
+            } catch (e: Throwable) {
+                Log.w(TAG, "setInputGainbyChannel failed for session $sessionId", e)
+            }
+        }
         dp.enabled = true
         return dp
     }
 
-    /** Loads a custom preset's bands from `custom_presets` SP and
-     *  returns a populated [ParametricEqualizer]. Mirrors the same
-     *  JSON shape MainActivity / AudioOutputActivity use. */
-    private fun loadPresetEq(name: String): ParametricEqualizer? {
+    /** Bands + preamp as parsed out of a saved preset JSON. */
+    private data class LoadedPreset(
+        val eq: ParametricEqualizer,
+        val preampDb: Float,
+    )
+
+    /** Loads a custom preset's bands AND preamp from `custom_presets`
+     *  SP and returns them together. Preamp defaults to 0 dB when the
+     *  preset JSON is missing the field (older presets, or imports
+     *  that never went through Save Preset). Mirrors the same JSON
+     *  shape MainActivity / AudioOutputActivity / RouteSwitchCoordinator
+     *  use. */
+    private fun loadPreset(name: String): LoadedPreset? {
         val prefs = context.getSharedPreferences("custom_presets", Context.MODE_PRIVATE)
         val str = runCatching { prefs.getString("preset_$name", null) }
             .getOrNull() ?: return null
@@ -464,7 +488,8 @@ class SessionEffectManager(private val context: Context) {
                 )
             }
             eq.isEnabled = true
-            eq
+            val preamp = if (obj.has("preamp")) obj.getDouble("preamp").toFloat() else 0f
+            LoadedPreset(eq, preamp)
         }.getOrNull()
     }
 
