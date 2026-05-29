@@ -68,6 +68,40 @@ class SessionEffectManager(private val context: Context) {
     @Synchronized
     fun getActiveSessions(): List<ActiveSession> = sessionInfo.values.toList()
 
+    /** Re-attach every currently-active session belonging to
+     *  [packageName] so the binding edit the user just made in
+     *  ChannelInputActivity takes effect on the live per-session DP.
+     *  Without this the existing session keeps the old preset's bands
+     *  until the audio stream closes and reopens (user has to stop /
+     *  restart the audio app, or toggle DP).
+     *
+     *  Only runs in Session-based routing mode — per-app DPs aren't
+     *  attached in System-wide mode anyway, so there's nothing to
+     *  rebuild there. Reverbs are left alone; they're keyed on session
+     *  id and not tied to the binding's preset. */
+    @Synchronized
+    fun reapplyBindingFor(packageName: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+        if (eqPrefs.getAudioRoutingMode() != 1) return
+        // Snapshot first — attach() will mutate sessionInfo.
+        val affected = sessionInfo.values
+            .filter { it.packageName == packageName }
+            .toList()
+        for (entry in affected) {
+            // Drop the existing per-session DP so attach() builds a
+            // fresh one with the new binding's bands + preamp. If the
+            // new binding is `(none)` / null, attach() short-circuits
+            // after releasing — the session plays unmodified.
+            sessions.remove(entry.sessionId)?.let {
+                try { it.release() } catch (_: Throwable) {}
+            }
+            attach(entry.sessionId, entry.packageName, entry.source)
+        }
+        if (affected.isNotEmpty()) {
+            Log.d(TAG, "reapplyBindingFor($packageName) rebuilt ${affected.size} session(s)")
+        }
+    }
+
     private fun notifySessionsChanged() {
         context.sendBroadcast(
             android.content.Intent(ACTION_SESSIONS_CHANGED)

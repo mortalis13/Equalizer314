@@ -50,6 +50,15 @@ class EqService : Service() {
          *  the user has to disconnect/reconnect the device or restart
          *  the app to see the new preset apply. */
         const val ACTION_REAPPLY_DEVICE_BINDING = "com.bearinmind.equalizer314.REAPPLY_DEVICE_BINDING"
+        /** Fired by ChannelInputActivity whenever a per-app binding is
+         *  added, changed, or removed. Carries [EXTRA_APP_PACKAGE] —
+         *  the audio app's package whose binding was edited. The
+         *  service tells SessionEffectManager to rebuild every active
+         *  per-session DP belonging to that package so the new preset
+         *  takes effect without the user having to stop / restart the
+         *  audio app. */
+        const val ACTION_REAPPLY_APP_BINDING = "com.bearinmind.equalizer314.REAPPLY_APP_BINDING"
+        const val EXTRA_APP_PACKAGE = "app_package"
         const val ACTION_EQ_STOPPED = "com.bearinmind.equalizer314.EQ_STOPPED"
         /** Broadcast on a successful start from the QS tile (or any
          *  other headless start path), so MainActivity can re-sync its
@@ -223,19 +232,31 @@ class EqService : Service() {
      *  (user just edited a binding in AudioOutputActivity). */
     private val routePresetReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == ACTION_REAPPLY_DEVICE_BINDING) {
-                // Re-run the coordinator for the currently-routed
-                // device. If its binding was just edited, the new
-                // preset takes effect on live DP immediately. If the
-                // edit was for a different (non-routed) device, this
-                // is a harmless no-op (same binding, same outcome).
-                reapplyCurrentDeviceBinding()
-                return
+            when (intent?.action) {
+                ACTION_REAPPLY_DEVICE_BINDING -> {
+                    // Re-run the coordinator for the currently-routed
+                    // device. If its binding was just edited, the new
+                    // preset takes effect on live DP immediately. If
+                    // the edit was for a different (non-routed)
+                    // device, this is a harmless no-op.
+                    reapplyCurrentDeviceBinding()
+                }
+                ACTION_REAPPLY_APP_BINDING -> {
+                    // Rebuild every per-session DP for the package
+                    // whose binding was just edited. SessionEffectManager
+                    // short-circuits when routing mode isn't Session-based.
+                    val pkg = intent.getStringExtra(EXTRA_APP_PACKAGE)
+                    if (pkg != null) {
+                        sessionEffects?.reapplyBindingFor(pkg)
+                    }
+                }
+                else -> {
+                    intent?.getStringExtra(RouteSwitchCoordinator.EXTRA_DEVICE_LABEL)?.let {
+                        lastDeviceLabel = it
+                    }
+                    updateNotification()
+                }
             }
-            intent?.getStringExtra(RouteSwitchCoordinator.EXTRA_DEVICE_LABEL)?.let {
-                lastDeviceLabel = it
-            }
-            updateNotification()
         }
     }
 
@@ -327,6 +348,7 @@ class EqService : Service() {
                     addAction(RouteSwitchCoordinator.ACTION_ROUTE_PRESET_APPLIED)
                     addAction(ACTION_NOTIFICATION_REFRESH)
                     addAction(ACTION_REAPPLY_DEVICE_BINDING)
+                    addAction(ACTION_REAPPLY_APP_BINDING)
                 },
                 RECEIVER_NOT_EXPORTED
             )
@@ -342,6 +364,7 @@ class EqService : Service() {
                     addAction(RouteSwitchCoordinator.ACTION_ROUTE_PRESET_APPLIED)
                     addAction(ACTION_NOTIFICATION_REFRESH)
                     addAction(ACTION_REAPPLY_DEVICE_BINDING)
+                    addAction(ACTION_REAPPLY_APP_BINDING)
                 }
             )
         }

@@ -742,16 +742,34 @@ class ChannelInputActivity : AppCompatActivity() {
             when {
                 pick == "(none)" -> {
                     eqPrefs.removeAppBinding(packageName)
+                    notifyAppBindingChanged(packageName)
                     Toast.makeText(this, "Unbound $appLabel", Toast.LENGTH_SHORT).show()
                 }
                 pick.endsWith(" (missing)") -> { /* dangling */ }
                 else -> {
                     eqPrefs.saveAppBinding(EqPreferencesManager.AppBinding(packageName, pick))
+                    notifyAppBindingChanged(packageName)
                     Toast.makeText(this, "Bound \"$pick\" to $appLabel", Toast.LENGTH_SHORT).show()
                 }
             }
             dropdown.clearFocus()
         }
+    }
+
+    /** Tell EqService to rebuild any per-session DP belonging to
+     *  [audioAppPackage] so the binding edit the user just made takes
+     *  effect on the live audio without requiring the user to stop
+     *  and restart the audio app. Mirrors AudioOutputActivity's
+     *  notifyBindingChanged path for per-app sessions. */
+    private fun notifyAppBindingChanged(audioAppPackage: String) {
+        sendBroadcast(
+            Intent(com.bearinmind.equalizer314.audio.EqService.ACTION_REAPPLY_APP_BINDING)
+                .setPackage(this.packageName)
+                .putExtra(
+                    com.bearinmind.equalizer314.audio.EqService.EXTRA_APP_PACKAGE,
+                    audioAppPackage,
+                )
+        )
     }
 
     // ---- Helpers (mirrored from AudioOutputActivity) -------------------
