@@ -37,6 +37,12 @@ class EqService : Service() {
          *  Unlike [ACTION_START_FROM_TILE] this never toggles off —
          *  it's start-or-no-op. */
         const val ACTION_AUTO_START = "com.bearinmind.equalizer314.AUTO_START"
+        /** Generic "the notification body might be stale — please
+         *  rebuild it" signal. Sent by MainActivity after writes to
+         *  `presetName` / similar prefs that the notification reads,
+         *  so the Preset line flips immediately even when DP is off
+         *  and MainActivity isn't currently bound to the service. */
+        const val ACTION_NOTIFICATION_REFRESH = "com.bearinmind.equalizer314.NOTIFICATION_REFRESH"
         const val ACTION_EQ_STOPPED = "com.bearinmind.equalizer314.EQ_STOPPED"
         /** Broadcast on a successful start from the QS tile (or any
          *  other headless start path), so MainActivity can re-sync its
@@ -54,6 +60,19 @@ class EqService : Service() {
             private set
 
         internal fun setDpRunning(running: Boolean) { isDpRunning = running }
+
+        /** Static mirrors of the instance `lastDeviceLabel` /
+         *  `lastDeviceKey` so callers can read the current route even
+         *  when they're not bound to the service. MainActivity unbinds
+         *  whenever DP is toggled off (see EqStateManager.stopProcessing),
+         *  so the on-graph status chip needs a binder-free way to know
+         *  what device audio is going to. */
+        @Volatile
+        var staticLastDeviceLabel: String? = null
+            internal set
+        @Volatile
+        var staticLastDeviceKey: String? = null
+            internal set
         /** Set on [ACTION_EQ_STOPPED] broadcasts whose source is an
          *  internal state change (e.g. routing-mode switch) rather
          *  than a user gesture. MainActivity's receiver still runs
@@ -171,6 +190,37 @@ class EqService : Service() {
         }
     }
 
+    /** Cached label of the currently-routed output device (BT name,
+     *  "Phone speaker", "USB DAC", etc.). Updated by the routing
+     *  monitor and the ACTION_ROUTE_PRESET_APPLIED receiver. Read by
+     *  buildNotification to show "Device: X" in the expanded body and
+     *  by MainActivity's status indicator above the graph. */
+    @Volatile
+    var lastDeviceLabel: String? = null
+        private set
+
+    /** Stable key for the currently-routed device (e.g. BT MAC,
+     *  "speaker", "usb_dac:VENDOR:PID"). Used to look up the active
+     *  device binding so the notification can show "Mode: Device"
+     *  when device-routing is what's driving the live preset, and the
+     *  main-screen status indicator does the same. */
+    @Volatile
+    var lastDeviceKey: String? = null
+        private set
+
+    /** Listens for RouteSwitchCoordinator's "I just applied a bound
+     *  preset" broadcast and refreshes the notification so the
+     *  Preset + Device lines reflect the new state without waiting
+     *  for the next volume tick. */
+    private val routePresetReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            intent?.getStringExtra(RouteSwitchCoordinator.EXTRA_DEVICE_LABEL)?.let {
+                lastDeviceLabel = it
+            }
+            updateNotification()
+        }
+    }
+
     /** Last seen "system sound active" state — tracked so we only call
      *  setEnabled() on actual transitions, not on every callback. */
     private var systemSoundBypassActive = false
@@ -253,10 +303,26 @@ class EqService : Service() {
                 IntentFilter("android.media.VOLUME_CHANGED_ACTION"),
                 RECEIVER_NOT_EXPORTED
             )
+            registerReceiver(
+                routePresetReceiver,
+                IntentFilter().apply {
+                    addAction(RouteSwitchCoordinator.ACTION_ROUTE_PRESET_APPLIED)
+                    addAction(ACTION_NOTIFICATION_REFRESH)
+                },
+                RECEIVER_NOT_EXPORTED
+            )
         } else {
             registerReceiver(
                 volumeReceiver,
                 IntentFilter("android.media.VOLUME_CHANGED_ACTION")
+            )
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(
+                routePresetReceiver,
+                IntentFilter().apply {
+                    addAction(RouteSwitchCoordinator.ACTION_ROUTE_PRESET_APPLIED)
+                    addAction(ACTION_NOTIFICATION_REFRESH)
+                }
             )
         }
 
@@ -277,7 +343,13 @@ class EqService : Service() {
         sessionEffects = SessionEffectManager(this)
 
         val monitor = AudioRoutingMonitor(this).apply {
-            onRouteChange = { coordinator.onRouteChange(it) }
+            onRouteChange = { change ->
+                lastDeviceKey = change.key
+                lastDeviceLabel = change.label
+                staticLastDeviceKey = change.key
+                staticLastDeviceLabel = change.label
+                coordinator.onRouteChange(change)
+            }
             // Auto-populate the Audio Output screen's "seen" list as
             // soon as devices appear — even before they're routed to.
             onDeviceSeen = { key, label -> eqPrefs.rememberSeenDevice(key, label) }
@@ -592,13 +664,19 @@ class EqService : Service() {
         }.getOrNull()
     }
 
-    private fun updateNotification() {
+    /** Re-post the notification with current state. Public so callers
+     *  outside this file (e.g. MainActivity after the user taps a
+     *  preset row in the custom presets list) can force an immediate
+     *  refresh of the Preset / Device / Mode lines without waiting
+     *  for the next volume tick or route change. */
+    fun updateNotification() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(NOTIFICATION_ID, buildNotification())
     }
 
     override fun onDestroy() {
         try { unregisterReceiver(volumeReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(routePresetReceiver) } catch (_: Exception) {}
         try {
             getSystemService(AudioManager::class.java)
                 ?.unregisterAudioPlaybackCallback(systemSoundCallback)
@@ -666,15 +744,64 @@ class EqService : Service() {
 
         val title = if (isOn) "Equalizer314: Online" else "Equalizer314: Offline"
         val actionLabel = if (isOn) "Turn Off" else "Turn On"
+        val volumeLine = "Volume: $volumePercent%"
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_nav_equalizer)
             .setContentTitle(title)
-            .setContentText("Volume: $volumePercent%")
+            .setContentText(volumeLine)
             .setContentIntent(openPending)
             .setOngoing(true)
             .setSilent(true)
             .addAction(R.drawable.ic_nav_power, actionLabel, togglePending)
-            .build()
+
+        // When DP is on, surface the active preset + output device in
+        // the expanded notification body so the user can see what's
+        // driving their audio at a glance. Sources:
+        //   - Preset: eqPrefs.getPresetName() is the single source of
+        //     truth — RouteSwitchCoordinator now updates it when a
+        //     device-bound preset auto-applies. In Session-based
+        //     routing the global preset isn't meaningful (per-app
+        //     sessions own their own EQs) so we show the mode label
+        //     instead.
+        //   - Device: cached from AudioRoutingMonitor's onRouteChange
+        //     and from the ACTION_ROUTE_PRESET_APPLIED broadcast.
+        // BigText body shows in the EXPANDED notification (tap the
+        // chevron). We surface it on both Online and Offline states —
+        // when DP is off it acts as a "here's what would apply if you
+        // turn me on" status line.
+        val prefs = EqPreferencesManager(this)
+        val routingMode = prefs.getAudioRoutingMode()
+        val activePresetName = prefs.getPresetName()
+        // Only treat the current name as a real preset if it points at
+        // an actual saved entry in `custom_presets` SP. Import flows
+        // (AutoEQ / APO Import / Generate Custom EQ), built-ins, and
+        // manual edits all write a non-bindable label here — surface
+        // those as "App Set" since the live EQ is just the in-app
+        // state, not a re-selectable preset.
+        val customPresetsPrefs = getSharedPreferences("custom_presets", Context.MODE_PRIVATE)
+        val isRealPreset = activePresetName.isNotBlank() &&
+            customPresetsPrefs.contains("preset_$activePresetName")
+        val presetDisplay = if (isRealPreset) activePresetName else "App Set"
+        // When System-wide routing is active AND the current device
+        // has a binding whose preset matches the live one, the audio
+        // is being driven by per-device routing — surface that as
+        // "Mode: Device" rather than echoing the bound preset's name
+        // back. Falls through to plain "Preset: X" / "Preset: None"
+        // for manual selections (no device binding active).
+        val deviceBinding = lastDeviceKey?.let { prefs.getDeviceBinding(it) }
+        val deviceDrivesPreset = routingMode != 1 &&
+            deviceBinding != null &&
+            deviceBinding.presetName == activePresetName
+        val presetLine = when {
+            routingMode == 1 -> "Mode: Session-based"
+            deviceDrivesPreset -> "Mode: Device"
+            else -> "Preset: $presetDisplay"
+        }
+        val deviceLine = lastDeviceLabel?.let { "Device: $it" } ?: "Device: —"
+        val bigText = "$volumeLine\n$presetLine\n$deviceLine"
+        builder.setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
+
+        return builder.build()
     }
 }

@@ -95,6 +95,37 @@
                             android:layout_width="match_parent"
                             android:layout_height="246dp" />
 
+                        <!-- Active device + preset indicator overlay.
+                             Uses raw-pixel units (px) so it renders at
+                             the same physical size as the canvas-drawn
+                             band-info card in EqGraphView, which also
+                             uses raw pixels (textSize 20f, padH 14f,
+                             padV 8f). Same drawable / colours so the
+                             two read as siblings. Positioned 40px from
+                             the top so it sits just below the band
+                             card (band card rect.bottom = labelY 30 +
+                             padV 8 = 38). Both cards float together
+                             near the top edge of the graph. Text set
+                             by MainActivity.updateDevicePresetStatus(). -->
+                        <TextView
+                            android:id="@+id/devicePresetStatusText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_gravity="top|center_horizontal"
+                            android:layout_marginTop="40px"
+                            android:background="@drawable/band_label_card_bg"
+                            android:paddingStart="14px"
+                            android:paddingEnd="14px"
+                            android:paddingTop="8px"
+                            android:paddingBottom="8px"
+                            android:textColor="#FFAAAAAA"
+                            android:textSize="20px"
+                            android:singleLine="true"
+                            android:ellipsize="middle"
+                            android:maxWidth="280dp"
+                            android:includeFontPadding="false"
+                            android:visibility="gone" />
+
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/bandPointsToggle"
                             style="?attr/materialButtonOutlinedStyle"

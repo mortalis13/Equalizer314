@@ -87,6 +87,12 @@ class RouteSwitchCoordinator(
             dynamicsManager.updateFromEqualizer(eq)
         }
 
+        // Persist the active preset name so getPresetName() reflects
+        // what's actually driving audio. EqService's notification reads
+        // this pref to show "Preset: X" in the BigText body, and
+        // MainActivity's preset dropdown stays in sync if it's open.
+        eqPrefs.savePresetName(binding.presetName)
+
         Log.d(TAG, "Applied '${binding.presetName}' for device '${change.label}'")
         context.sendBroadcast(
             Intent(ACTION_ROUTE_PRESET_APPLIED)

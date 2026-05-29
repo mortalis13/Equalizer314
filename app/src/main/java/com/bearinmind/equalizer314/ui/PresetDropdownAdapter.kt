@@ -49,6 +49,27 @@ class PresetDropdownAdapter(
         val entry = entries[position]
         row.findViewById<TextView>(R.id.presetRowName).text = entry.displayName
         row.findViewById<PresetCurveView>(R.id.presetRowCurve).setPreset(entry.presetJson)
+        // Preamp subtitle — visible only for real presets that carry
+        // EQ data. Sentinel rows like "(none)" and "<name> (missing)"
+        // have no JSON, so we hide the line entirely instead of
+        // misleadingly showing "0.0 dB" under them.
+        val preampView = row.findViewById<TextView>(R.id.presetRowPreamp)
+        val json = entry.presetJson
+        if (json == null) {
+            preampView.visibility = View.GONE
+        } else {
+            preampView.visibility = View.VISIBLE
+            preampView.text = formatPreamp(json.optDouble("preamp", 0.0))
+        }
         return row
+    }
+
+    companion object {
+        /** Renders a preamp value as "+8.0 dB" / "-7.0 dB" / "0.0 dB".
+         *  Always one decimal place; positive values explicitly carry
+         *  a `+` so the dropdown subtitle reads naturally next to the
+         *  preset name. */
+        fun formatPreamp(value: Double): String =
+            if (value == 0.0) "0.0 dB" else "%+.1f dB".format(value)
     }
 }

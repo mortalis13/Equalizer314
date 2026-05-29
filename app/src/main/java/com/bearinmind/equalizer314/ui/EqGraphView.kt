@@ -1190,7 +1190,12 @@ class EqGraphView @JvmOverloads constructor(
         val padV = 8f
         val cornerRadius = 12f * resources.displayMetrics.density
         val labelX = (width - labelWidth) / 2f
-        val labelY = 42f
+        // Baseline moved up so the band card sits flush near the top
+        // edge of the graph (rect.top = labelY - 24f = 6f). The
+        // device/preset overlay chip in activity_main.xml stacks
+        // directly below this card — keep its layout_marginTop in
+        // sync with the new rect.bottom (labelY + padV = 38f).
+        val labelY = 30f
 
         val rect = android.graphics.RectF(
             labelX - padH, labelY - 24f,

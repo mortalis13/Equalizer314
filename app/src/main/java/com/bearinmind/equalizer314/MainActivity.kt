@@ -237,6 +237,7 @@ class  MainActivity : AppCompatActivity() {
     private lateinit var powerButton: MaterialButton
     private lateinit var statusText: TextView
     private lateinit var modeDescriptionText: TextView
+    private lateinit var devicePresetStatusText: TextView
     private lateinit var bandToggleGroup: LinearLayout
     private lateinit var bandToggleGroup2: LinearLayout
     private lateinit var triangleIndicator: View
@@ -310,6 +311,7 @@ class  MainActivity : AppCompatActivity() {
                     )
                 } catch (_: Throwable) {}
             }
+            updateDevicePresetStatus()
         }
     }
 
@@ -328,7 +330,58 @@ class  MainActivity : AppCompatActivity() {
             // the service side, both branches do the same thing.
             eqPrefs.savePowerState(false)
             com.bearinmind.equalizer314.ui.BottomNavHelper.updatePowerFab(this@MainActivity, false)
+            updateDevicePresetStatus()
         }
+    }
+
+    /** Refreshes the device/preset status line above the graph in
+     *  response to route changes and preset-name updates. Listens for:
+     *   - ACTION_ROUTE_PRESET_APPLIED (RouteSwitchCoordinator) when a
+     *     device-bound preset auto-applies.
+     *   - ACTION_NOTIFICATION_REFRESH (sent by MainActivity itself
+     *     after the user taps a preset row, but the foreground service
+     *     also re-broadcasts so other listeners stay in sync).
+     *   - ACTION_EQ_STARTED / ACTION_EQ_STOPPED — already handled by
+     *     their dedicated receivers which also call us.
+     */
+    private val statusRefreshReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateDevicePresetStatus()
+        }
+    }
+
+    /** Refresh the small device/preset status line above the EQ graph.
+     *
+     *  Always visible — shows what's loaded even when DP is off, so
+     *  the user can see "if I turn this on, here's what will apply."
+     *
+     *  Format: "<preset> · <device>"
+     *  - <preset> is the saved-custom-preset name when one is loaded,
+     *    else "App Set" (matches EqService.buildNotification's
+     *    display rule). For Session-based routing, replaced with
+     *    "Session-based" since no global preset is active.
+     *  - <device> is the cached output route label. Omitted when not
+     *    yet known (service unbound / no route change has fired). */
+    private fun updateDevicePresetStatus() {
+        if (!::devicePresetStatusText.isInitialized) return
+        val presetPart = if (eqPrefs.getAudioRoutingMode() == 1) {
+            "Session-based"
+        } else {
+            val activePresetName = eqPrefs.getPresetName()
+            val customPresetsPrefs = getSharedPreferences("custom_presets", MODE_PRIVATE)
+            val isRealPreset = activePresetName.isNotBlank() &&
+                customPresetsPrefs.contains("preset_$activePresetName")
+            if (isRealPreset) activePresetName else "App Set"
+        }
+        // Use EqService's static cache so we still get the current
+        // device label after DP is toggled off (MainActivity unbinds
+        // from the service in stopProcessing, but the foreground
+        // service stays alive and its route monitor keeps updating
+        // the static).
+        val deviceLabel = EqService.staticLastDeviceLabel
+        devicePresetStatusText.text =
+            if (deviceLabel != null) "$presetPart · $deviceLabel" else presetPart
+        devicePresetStatusText.visibility = View.VISIBLE
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -404,6 +457,14 @@ class  MainActivity : AppCompatActivity() {
                 IntentFilter(EqService.ACTION_EQ_STARTED),
                 RECEIVER_NOT_EXPORTED
             )
+            registerReceiver(
+                statusRefreshReceiver,
+                IntentFilter().apply {
+                    addAction(com.bearinmind.equalizer314.audio.RouteSwitchCoordinator.ACTION_ROUTE_PRESET_APPLIED)
+                    addAction(EqService.ACTION_NOTIFICATION_REFRESH)
+                },
+                RECEIVER_NOT_EXPORTED
+            )
         } else {
             registerReceiver(
                 eqStoppedReceiver,
@@ -413,6 +474,14 @@ class  MainActivity : AppCompatActivity() {
             registerReceiver(
                 eqStartedReceiver,
                 IntentFilter(EqService.ACTION_EQ_STARTED)
+            )
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(
+                statusRefreshReceiver,
+                IntentFilter().apply {
+                    addAction(com.bearinmind.equalizer314.audio.RouteSwitchCoordinator.ACTION_ROUTE_PRESET_APPLIED)
+                    addAction(EqService.ACTION_NOTIFICATION_REFRESH)
+                }
             )
         }
 
@@ -453,6 +522,7 @@ class  MainActivity : AppCompatActivity() {
         powerButton = findViewById(R.id.powerButton)
         statusText = findViewById(R.id.statusText)
         modeDescriptionText = findViewById(R.id.modeDescriptionText)
+        devicePresetStatusText = findViewById(R.id.devicePresetStatusText)
         bandToggleGroup = findViewById(R.id.bandToggleGroup)
         bandToggleGroup2 = findViewById(R.id.bandToggleGroup2)
         triangleIndicator = findViewById<View>(R.id.triangleIndicator).apply {
@@ -1157,14 +1227,43 @@ class  MainActivity : AppCompatActivity() {
                     layoutParams = android.widget.LinearLayout.LayoutParams(thumbW, thumbH)
                 }
 
-                // Left side: preset name
+                // Left side: preset name stacked over a small preamp
+                // subtitle ("+8.0 dB" / "-7.0 dB" / "0.0 dB"). Pulled
+                // out of the preset JSON's `preamp` field, defaulting
+                // to 0.0 for legacy presets that pre-date the preamp
+                // save. Hidden entirely if the JSON couldn't be parsed.
                 val nameText = android.widget.TextView(this).apply {
                     text = name
                     setTextColor(0xFFE2E2E2.toInt())
                     textSize = 14f
                     isSingleLine = true
+                    layoutParams = android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                }
+                val presetPreamp: Double? = try {
+                    org.json.JSONObject(presetJson ?: "{}").optDouble("preamp", 0.0)
+                } catch (_: Exception) { null }
+                val preampSubtitle = android.widget.TextView(this).apply {
+                    text = presetPreamp?.let {
+                        com.bearinmind.equalizer314.ui.PresetDropdownAdapter.formatPreamp(it)
+                    } ?: ""
+                    setTextColor(0xFF888888.toInt())
+                    textSize = 11f
+                    isSingleLine = true
+                    visibility = if (presetPreamp == null) android.view.View.GONE else android.view.View.VISIBLE
+                    layoutParams = android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                }
+                val nameCol = android.widget.LinearLayout(this).apply {
+                    orientation = android.widget.LinearLayout.VERTICAL
                     layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     gravity = android.view.Gravity.CENTER_VERTICAL
+                    addView(nameText)
+                    addView(preampSubtitle)
                 }
 
                 // Right side: graph + filters count stacked vertically
@@ -1362,7 +1461,7 @@ class  MainActivity : AppCompatActivity() {
 
                 rightCol.addView(thumbnail)
                 rightCol.addView(filtersText)
-                presetRow.addView(nameText)
+                presetRow.addView(nameCol)
                 presetRow.addView(rightCol)
                 presetRow.addView(exportBtn)
                 presetRow.addView(deleteBtn)
@@ -1403,6 +1502,32 @@ class  MainActivity : AppCompatActivity() {
                         stateManager.preampGainDb = obj.getDouble("preamp").toFloat()
                         stateManager.eqPrefs.savePreampGain(stateManager.preampGainDb)
                     }
+                    // Persist the loaded preset's name so the foreground
+                    // notification, anything else that reads
+                    // getPresetName(), and the next save-preset prompt
+                    // all reflect what's actually loaded. Without this
+                    // the name pref keeps whatever was last written
+                    // (e.g. "AutoEQ" from an earlier import) even
+                    // though the user just loaded a different preset.
+                    stateManager.eqPrefs.savePresetName(name)
+                    // Sync the top-of-screen preset dropdown's text to
+                    // the loaded preset too. Required because onPause
+                    // re-writes `savePresetName(presetDropdown.text)`
+                    // when MainActivity backgrounds — if the dropdown
+                    // still showed the previous name, onPause would
+                    // silently clobber the pref we just set.
+                    presetDropdown.setText(name, false)
+                    // Broadcast a refresh so EqService rebuilds the
+                    // notification immediately, regardless of whether
+                    // DP is currently on. When DP is off, MainActivity
+                    // has unbound from the service (see
+                    // EqStateManager.stopProcessing) — a binder call
+                    // would no-op. The broadcast still reaches the
+                    // alive foreground service via its receiver.
+                    sendBroadcast(
+                        Intent(com.bearinmind.equalizer314.audio.EqService.ACTION_NOTIFICATION_REFRESH)
+                            .setPackage(packageName)
+                    )
                     if (stateManager.isProcessing) {
                         val (lEq, rEq) = stateManager.getChannelEqs()
                         stateManager.eqService?.let { svc ->
@@ -3410,6 +3535,7 @@ class  MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        updateDevicePresetStatus()
         // Pick up any limiter changes made in LimiterActivity while we were
         // paused. LimiterActivity writes prefs directly and never touches
         // EqStateManager's mirror fields, so without this sync the next
@@ -3501,6 +3627,7 @@ class  MainActivity : AppCompatActivity() {
         visualizerHelper.stop()
         try { unregisterReceiver(eqStoppedReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(eqStartedReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(statusRefreshReceiver) } catch (_: Exception) {}
         super.onDestroy()
     }
 
