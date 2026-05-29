@@ -364,14 +364,29 @@ class  MainActivity : AppCompatActivity() {
      *    yet known (service unbound / no route change has fired). */
     private fun updateDevicePresetStatus() {
         if (!::devicePresetStatusText.isInitialized) return
-        val presetPart = if (eqPrefs.getAudioRoutingMode() == 1) {
-            "Session-based"
-        } else {
-            val activePresetName = eqPrefs.getPresetName()
-            val customPresetsPrefs = getSharedPreferences("custom_presets", MODE_PRIVATE)
-            val isRealPreset = activePresetName.isNotBlank() &&
-                customPresetsPrefs.contains("preset_$activePresetName")
-            if (isRealPreset) activePresetName else "App Set"
+        val routingMode = eqPrefs.getAudioRoutingMode()
+        val activePresetName = eqPrefs.getPresetName()
+        val customPresetsPrefs = getSharedPreferences("custom_presets", MODE_PRIVATE)
+        val isRealPreset = activePresetName.isNotBlank() &&
+            customPresetsPrefs.contains("preset_$activePresetName")
+        val presetDisplay = if (isRealPreset) activePresetName else "none"
+        // Same three-piece logic as EqService.buildNotification's
+        // BigText, but compact onto a single chip line below the
+        // band-info card:  Mode · Preset · Device
+        val appPreset = stateManager.eqService?.sessionEffects?.getCurrentDrivingPreset()
+        val deviceKey = EqService.staticLastDeviceKey
+        val deviceBinding = deviceKey?.let { eqPrefs.getDeviceBinding(it) }
+        val deviceDrivesPreset = routingMode != 1 &&
+            deviceBinding != null &&
+            deviceBinding.presetName == activePresetName
+        val mode = when {
+            routingMode == 1 -> "Session"
+            deviceDrivesPreset -> "Device"
+            else -> "System"
+        }
+        val presetForDisplay = when {
+            routingMode == 1 -> appPreset ?: "none"
+            else -> presetDisplay
         }
         // Use EqService's static cache so we still get the current
         // device label after DP is toggled off (MainActivity unbinds
@@ -379,8 +394,10 @@ class  MainActivity : AppCompatActivity() {
         // service stays alive and its route monitor keeps updating
         // the static).
         val deviceLabel = EqService.staticLastDeviceLabel
-        devicePresetStatusText.text =
-            if (deviceLabel != null) "$presetPart · $deviceLabel" else presetPart
+        devicePresetStatusText.text = buildString {
+            append(mode).append(" · ").append(presetForDisplay)
+            if (deviceLabel != null) append(" · ").append(deviceLabel)
+        }
         devicePresetStatusText.visibility = View.VISIBLE
     }
 

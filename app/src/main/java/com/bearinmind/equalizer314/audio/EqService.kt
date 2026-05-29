@@ -849,24 +849,37 @@ class EqService : Service() {
         val customPresetsPrefs = getSharedPreferences("custom_presets", Context.MODE_PRIVATE)
         val isRealPreset = activePresetName.isNotBlank() &&
             customPresetsPrefs.contains("preset_$activePresetName")
-        val presetDisplay = if (isRealPreset) activePresetName else "App Set"
-        // When System-wide routing is active AND the current device
-        // has a binding whose preset matches the live one, the audio
-        // is being driven by per-device routing — surface that as
-        // "Mode: Device" rather than echoing the bound preset's name
-        // back. Falls through to plain "Preset: X" / "Preset: None"
-        // for manual selections (no device binding active).
+        val presetDisplay = if (isRealPreset) activePresetName else "none"
+        // Always show three labelled lines so the user can see at a
+        // glance whether a rule is driving the current sound vs they
+        // picked the preset themselves:
+        //  Mode    = how the current EQ was selected
+        //              "Session" — Session-based routing (per-app bindings)
+        //              "Device"  — System-wide + current device's
+        //                          binding is what's live
+        //              "System"  — System-wide + the user's own pick
+        //  Preset  = the actual preset name being applied (or "(none
+        //            active)" in Session-based mode when nothing's
+        //            playing with a binding)
+        //  Device  = currently-routed output label
+        val appPreset = sessionEffects?.getCurrentDrivingPreset()
         val deviceBinding = lastDeviceKey?.let { prefs.getDeviceBinding(it) }
         val deviceDrivesPreset = routingMode != 1 &&
             deviceBinding != null &&
             deviceBinding.presetName == activePresetName
-        val presetLine = when {
-            routingMode == 1 -> "Mode: Session-based"
-            deviceDrivesPreset -> "Mode: Device"
-            else -> "Preset: $presetDisplay"
+        val mode = when {
+            routingMode == 1 -> "Session"
+            deviceDrivesPreset -> "Device"
+            else -> "System"
         }
+        val presetForDisplay = when {
+            routingMode == 1 -> appPreset ?: "none"
+            else -> presetDisplay
+        }
+        val modeLine = "Mode: $mode"
+        val presetLine = "Preset: $presetForDisplay"
         val deviceLine = lastDeviceLabel?.let { "Device: $it" } ?: "Device: —"
-        val bigText = "$volumeLine\n$presetLine\n$deviceLine"
+        val bigText = "$volumeLine\n$modeLine\n$presetLine\n$deviceLine"
         builder.setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
 
         return builder.build()

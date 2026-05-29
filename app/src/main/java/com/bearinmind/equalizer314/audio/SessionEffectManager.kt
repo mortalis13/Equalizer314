@@ -68,6 +68,22 @@ class SessionEffectManager(private val context: Context) {
     @Synchronized
     fun getActiveSessions(): List<ActiveSession> = sessionInfo.values.toList()
 
+    /** Name of the preset currently driving per-app audio, for the
+     *  notification + on-graph status chip's "(app preset)" label.
+     *  Returns the bound preset name of the first session that is
+     *  both playing right now AND has a binding. Returns null when:
+     *   - routing isn't Session-based
+     *   - no session is currently playing with a binding
+     *  Callers fall back to other display modes in those cases. */
+    @Synchronized
+    fun getCurrentDrivingPreset(): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+        if (eqPrefs.getAudioRoutingMode() != 1) return null
+        return sessionInfo.values
+            .firstOrNull { it.packageName in playingPackages && !it.presetName.isNullOrBlank() }
+            ?.presetName
+    }
+
     /** Re-attach every currently-active session belonging to
      *  [packageName] so the binding edit the user just made in
      *  ChannelInputActivity takes effect on the live per-session DP.

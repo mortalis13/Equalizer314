@@ -223,16 +223,36 @@ object ParametricToDpConverter {
             BiquadFilter.FilterType.LOW_SHELF,
             BiquadFilter.FilterType.HIGH_SHELF -> when {
                 absGain < 0.5f -> emptyList()
+                // Dense octave-half spacing across the shelf transition
+                // zone (~0.25×fc to ~4×fc) plus a couple of asymptote
+                // points outside. The earlier 4-/6-point set was too
+                // sparse for wide-Q shelves: a Q=0.71 LSHELF at 50 Hz
+                // got only sample points at 12.5 / 25 / 100 / 200 Hz,
+                // so DynamicsProcessing's linear interpolation gave a
+                // piecewise-linear blob where the analytical shelf has
+                // a smooth S-curve. Verified against REW reference in
+                // issue #26. The center frequency itself is already an
+                // anchor point so it doesn't need to appear here.
                 q > 1.5f -> listOf(
-                    f * 0.25f, f * 0.5f, f * 0.71f,
-                    f * 1.41f, f * 2.0f, f * 4.0f
+                    f * 0.25f, f * 0.354f, f * 0.5f, f * 0.71f, f * 0.841f,
+                    f * 1.189f, f * 1.41f, f * 2.0f, f * 2.83f, f * 4.0f
                 )
-                else -> listOf(f * 0.25f, f * 0.5f, f * 2.0f, f * 4.0f)
+                else -> listOf(
+                    f * 0.125f, f * 0.25f, f * 0.354f, f * 0.5f, f * 0.71f,
+                    f * 1.41f, f * 2.0f, f * 2.83f, f * 4.0f, f * 8.0f
+                )
             }
             BiquadFilter.FilterType.LOW_SHELF_1,
             BiquadFilter.FilterType.HIGH_SHELF_1 ->
                 if (absGain < 0.5f) emptyList()
-                else listOf(f * 0.25f, f * 0.5f, f * 2.0f, f * 4.0f)
+                // 1st-order shelves have a gentler 6 dB/oct roll, so
+                // they need fewer samples than the 2nd-order branch,
+                // but the previous 4-point layout was still too coarse
+                // through the corner region.
+                else listOf(
+                    f * 0.125f, f * 0.25f, f * 0.5f, f * 0.71f,
+                    f * 1.41f, f * 2.0f, f * 4.0f, f * 8.0f
+                )
             BiquadFilter.FilterType.LOW_PASS,
             BiquadFilter.FilterType.HIGH_PASS -> when {
                 q > 1.5f -> listOf(
