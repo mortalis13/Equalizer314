@@ -455,36 +455,40 @@ class TargetCurveActivity : AppCompatActivity() {
             setPadding((24 * density).toInt(), (20 * density).toInt(), (24 * density).toInt(), (16 * density).toInt())
         }
         val titleTv = android.widget.TextView(this).apply {
-            text = "Add to AutoEQ & Presets"
+            text = "Save Custom Preset"
             setTextColor(0xFFE2E2E2.toInt()); textSize = 20f
             setPadding(0, 0, 0, (12 * density).toInt())
         }
-        val messageTv = android.widget.TextView(this).apply {
-            text = "Add this EQ to the AutoEQ & Presets list"
-            setTextColor(0xFFAAAAAA.toInt()); textSize = 14f
-            setPadding(0, 0, 0, (12 * density).toInt())
+        // Input box matches the other "Save Custom Preset" dialogs:
+        // a FrameLayout with a rounded 12dp #555555 border wrapping a
+        // borderless EditText (rather than styling the EditText itself).
+        val inputBox = android.widget.FrameLayout(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = (16 * density).toInt() }
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0x00000000)
+                setStroke((1 * density).toInt(), 0xFF555555.toInt())
+                cornerRadius = 12 * density
+            }
         }
         val nameInput = android.widget.EditText(this).apply {
             setText(defaultName)
-            setTextColor(0xFFE2E2E2.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
             setHintTextColor(0xFF888888.toInt())
-            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            background = null
+            isSingleLine = true
+            val pad = (14 * density).toInt()
+            setPadding(pad, pad, pad, pad)
             setSelection(text.length)
-            setPadding(
-                (12 * density).toInt(), (10 * density).toInt(),
-                (12 * density).toInt(), (10 * density).toInt()
-            )
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0x00000000)
-                setStroke((1 * density).toInt(), 0xFF444444.toInt())
-                cornerRadius = 10 * density
-            }
         }
+        inputBox.addView(nameInput)
         val divider = android.view.View(this).apply {
             layoutParams = android.widget.LinearLayout.LayoutParams(
                 android.widget.LinearLayout.LayoutParams.MATCH_PARENT, (1 * density).toInt()
             ).apply {
-                topMargin = (16 * density).toInt()
                 bottomMargin = (12 * density).toInt()
             }
             setBackgroundColor(0xFF444444.toInt())
@@ -504,7 +508,7 @@ class TargetCurveActivity : AppCompatActivity() {
                 0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f
             ).apply { marginEnd = (3 * density).toInt() }
             cornerRadius = (12 * density).toInt()
-            setTextColor(0xFFDDDDDD.toInt())
+            setTextColor(0xFFEF9A9A.toInt())
             strokeColor = android.content.res.ColorStateList.valueOf(0xFF444444.toInt())
             strokeWidth = (1 * density).toInt()
             setBackgroundColor(0x00000000)
@@ -513,12 +517,12 @@ class TargetCurveActivity : AppCompatActivity() {
         val addBtn = com.google.android.material.button.MaterialButton(
             this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle
         ).apply {
-            text = "Add"
+            text = "OK"
             layoutParams = android.widget.LinearLayout.LayoutParams(
                 0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f
             ).apply { marginStart = (3 * density).toInt() }
             cornerRadius = (12 * density).toInt()
-            setTextColor(0xFFE2E2E2.toInt())
+            setTextColor(0xFFDDDDDD.toInt())
             strokeColor = android.content.res.ColorStateList.valueOf(0xFF444444.toInt())
             strokeWidth = (1 * density).toInt()
             setBackgroundColor(0x00000000)
@@ -526,8 +530,7 @@ class TargetCurveActivity : AppCompatActivity() {
         }
         btnRow.addView(cancelBtn); btnRow.addView(addBtn)
         dialogView.addView(titleTv)
-        dialogView.addView(messageTv)
-        dialogView.addView(nameInput)
+        dialogView.addView(inputBox)
         dialogView.addView(divider)
         dialogView.addView(btnRow)
 
@@ -537,8 +540,41 @@ class TargetCurveActivity : AppCompatActivity() {
         cancelBtn.setOnClickListener { dialog.dismiss() }
         addBtn.setOnClickListener {
             val name = nameInput.text.toString().trim().ifEmpty { defaultName }
-            eqPrefs.addImportedPreset(name, apoText)
-            Toast.makeText(this, "Added \"$name\" to AutoEQ presets", Toast.LENGTH_SHORT).show()
+            // Save into the app's custom_presets (the same store the
+            // main-screen "Save Custom Preset" writes), not the AutoEQ
+            // imported list, so the generated EQ becomes a first-class
+            // preset: re-selectable from the main list and bindable to
+            // apps / devices. Use the already-computed profile when
+            // available, else re-parse the displayed APO text.
+            val profile = lastComputedProfile ?: AutoEqParser.parse(apoText)
+            if (profile == null) {
+                Toast.makeText(this, "Couldn't parse the generated EQ", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+                return@setOnClickListener
+            }
+            val bands = org.json.JSONArray()
+            for (f in profile.filters) {
+                val ft = com.bearinmind.equalizer314.autoeq.apoTokenToFilterType(f.filterType)
+                bands.put(org.json.JSONObject().apply {
+                    put("frequency", f.frequency)
+                    put("gain", f.gain)
+                    put("q", f.q.toDouble())
+                    put("filterType", ft.name)
+                    put("enabled", true)
+                })
+            }
+            val json = org.json.JSONObject().apply {
+                put("preamp", profile.preampDb)
+                put("channelSideEqEnabled", false)
+                put("bands", bands)
+            }
+            val customPrefs = getSharedPreferences("custom_presets", MODE_PRIVATE)
+            val existing = customPrefs.getStringSet("preset_names", emptySet()) ?: emptySet()
+            customPrefs.edit()
+                .putString("preset_$name", json.toString())
+                .putStringSet("preset_names", existing.toMutableSet() + name)
+                .apply()
+            Toast.makeText(this, "Saved \"$name\" to your presets", Toast.LENGTH_SHORT).show()
             dialog.dismiss()
         }
         dialog.show()
