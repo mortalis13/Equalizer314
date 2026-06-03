@@ -75,8 +75,9 @@ class Eq314TileService : TileService() {
         tile.label = if (isOn) "EQ314 ON" else "EQ314 OFF"
         tile.state = if (isOn) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.icon = Icon.createWithResource(this, R.drawable.ic_nav_equalizer)
+        // No subtitle — the label ("EQ314 ON" / "EQ314 OFF") says it all.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            tile.subtitle = if (isOn) "DynamicsProcessing running" else "DynamicsProcessing stopped"
+            tile.subtitle = ""
         }
         tile.updateTile()
     }

@@ -67,6 +67,13 @@
                 <action android:name="android.media.action.DISPLAY_AUDIO_EFFECT_CONTROL_PANEL" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!-- Long-pressing the EQ314 Quick Settings tile opens the
+                 app instead of the system App-info page. Android routes
+                 a tile long-press to the activity that declares this
+                 action; without it the framework falls back to App info. -->
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
         </activity>
 
         <activity
