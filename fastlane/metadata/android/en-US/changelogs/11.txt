@@ -1,0 +1,7 @@
+- Quick Settings tile: long-pressing the EQ314 tile now opens the app instead of the system App-info page, and the tile is now minimal — just "EQ314 ON" / "EQ314 OFF" with the DynamicsProcessing sub-text removed (issue #34).
+- New EQ on/off control: an ON/OFF button in the graph header (next to the Edit pencil) toggles the EQ, and the bottom-nav EQ status now reflects the real state instead of being stuck on "ON" (issue #9).
+- Per-device "Disable EQ" option in Audio Output. A third device-binding choice (alongside "(none)" and a preset) that fully detaches DynamicsProcessing while that output device is active — for dodging OEM output-effect conflicts like Pixel Adaptive Sound. Shown in red with "N/A" in place of a curve preview (issue #33).
+- Device route changes now recreate the global DP on the new output (a quick stop/start). Fixes the "no sound from speaker after disconnecting Bluetooth until you re-toggle" issue on some devices; may cause a brief audible blip on switch (issue #33).
+- AutoEQ & Presets: tap the currently-selected preset card to save it straight into your custom presets via the same popup as the main screen — no more multi-step round trip (issue #28).
+- Generate Custom EQ: the save-to-presets popup now saves into your actual custom presets and is styled identically to the other Save Custom Preset dialogs across the app (issue #28).
+- Equalizer314 now registers as a system audio-effect control panel, so it shows up in the OEM "sound quality and effects" chooser alongside Wavelet / Poweramp / JamesDSP (issue #28).
